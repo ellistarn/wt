@@ -2,8 +2,10 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ellistarn/wt/pkg/ssh"
@@ -50,3 +52,129 @@ func WorktreeAdd(host, repo, name string) error {
 	return err
 }
 
+// DirExists checks whether a directory exists, locally or over SSH.
+func DirExists(host, path string) bool {
+	if host == "" {
+		info, err := os.Stat(path)
+		return err == nil && info.IsDir()
+	}
+	_, err := ssh.Run(host, fmt.Sprintf("test -d '%s'", path))
+	return err == nil
+}
+
+// runGit runs a git command in the given directory. If host is empty, runs locally.
+func runGit(host, dir string, args ...string) (string, error) {
+	if host == "" {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+	}
+	script := fmt.Sprintf("git -C '%s' %s", dir, strings.Join(quoted, " "))
+	out, err := ssh.Run(host, script)
+	return strings.TrimSpace(out), err
+}
+
+// DefaultBranch returns the default branch name (e.g., "main" or "master")
+// by checking refs/remotes/origin/HEAD, then probing main and master.
+func DefaultBranch(host, repo string) string {
+	out, err := runGit(host, repo, "symbolic-ref", "refs/remotes/origin/HEAD")
+	if err == nil {
+		// refs/remotes/origin/main -> main
+		parts := strings.Split(out, "/")
+		return parts[len(parts)-1]
+	}
+	// Probe common names
+	for _, name := range []string{"main", "master"} {
+		if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+name); err == nil {
+			return name
+		}
+	}
+	return "main" // fallback
+}
+
+// UniqueCommitCount returns the number of commits on branch that are not on
+// origin/<default>. Returns 0 if the branch has not diverged.
+func UniqueCommitCount(host, repo, branch string) int {
+	def := DefaultBranch(host, repo)
+	out, err := runGit(host, repo, "rev-list", "--count", "origin/"+def+".."+branch)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(out)
+	return n
+}
+
+// IsMerged returns true if the branch was pushed to origin and its tip is now
+// an ancestor of origin/<default>. A branch that was never pushed cannot be
+// "merged" — it's either fresh or was only worked on locally.
+//
+// This catches regular merges and fast-forward merges (GitFarm). Squash merges
+// produce a new commit hash on main, so the branch tip is not an ancestor —
+// those are not detected and rely on the stale gate or targeted removal.
+func IsMerged(host, repo, branch string) bool {
+	// A branch that was never pushed can't be "merged."
+	if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
+		return false
+	}
+	def := DefaultBranch(host, repo)
+	_, err := runGit(host, repo, "merge-base", "--is-ancestor", branch, "origin/"+def)
+	return err == nil
+}
+
+// IsClean returns true if the worktree has no modified, staged, or untracked files.
+func IsClean(host, dir string) bool {
+	out, err := runGit(host, dir, "status", "--porcelain")
+	return err == nil && out == ""
+}
+
+// IsPushed returns true if the branch has a remote tracking ref on origin and
+// the local branch is not ahead of it.
+func IsPushed(host, repo, branch string) bool {
+	// Check that the remote tracking ref exists
+	if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
+		return false
+	}
+	// Check local is not ahead
+	out, err := runGit(host, repo, "rev-list", "--count", "origin/"+branch+".."+branch)
+	if err != nil {
+		return false
+	}
+	n, _ := strconv.Atoi(out)
+	return n == 0
+}
+
+// Fetch updates remote tracking refs for a repo. Does not prune — keeping
+// refs for deleted remote branches is needed for merge detection (IsMerged
+// checks whether origin/<branch> exists as a signal the branch was pushed).
+func Fetch(host, repo string) {
+	runGit(host, repo, "fetch", "origin")
+}
+
+// WorktreeRemove removes the worktree directory and deletes the branch.
+// git worktree remove deletes the directory; git branch -d deletes the branch
+// (only if merged, safe delete).
+func WorktreeRemove(host, repo, name string) error {
+	wtPath := repo + "/.worktrees/" + name
+	if _, err := runGit(host, repo, "worktree", "remove", wtPath); err != nil {
+		return fmt.Errorf("git worktree remove: %w", err)
+	}
+	// Best-effort branch delete. -d is safe (refuses unmerged branches).
+	// If it fails (branch doesn't exist, not merged), that's fine.
+	runGit(host, repo, "branch", "-d", name)
+	return nil
+}
+
+// WorktreeForceRemove removes the worktree and branch without safety checks.
+func WorktreeForceRemove(host, repo, name string) error {
+	wtPath := repo + "/.worktrees/" + name
+	if _, err := runGit(host, repo, "worktree", "remove", "--force", wtPath); err != nil {
+		return fmt.Errorf("git worktree remove --force: %w", err)
+	}
+	// Force delete the branch regardless of merge status.
+	runGit(host, repo, "branch", "-D", name)
+	return nil
+}
