@@ -119,9 +119,9 @@ directly. For each server (local and remote):
 
 1. `GET /session?directory=<dir>` — per worktree, returns sessions across
    projects. The most recently updated session is selected.
-2. `GET /session/<id>/message` — per session, sums assistant message tokens
-   for session size and derives working/idle from whether the last assistant
-   message has completed.
+2. `GET /session/<id>/message` — per session, reads the last assistant
+   message's total token count (context window size) and derives working/idle
+   from whether that message has completed.
 
 ```
 WORKTREE            TITLE                           STATUS    ACTIVITY  TOKENS  REPO                              AGE
@@ -139,7 +139,7 @@ Columns:
 | TITLE | Session title, auto-generated from the first prompt. |
 | STATUS | Highest-priority state: `attached` (TUI client connected), `working` (agent generating, no client), `idle` (session exists, no activity). Attachment is detected by scanning local `opencode attach` processes. No session shows `-`. |
 | ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). |
-| TOKENS | Total input + output tokens across all assistant messages in the most recent session. Formatted as `12k`, `150k`. |
+| TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. |
 | REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
 | AGE | When the worktree was created. |
 
