@@ -18,6 +18,8 @@ type Entry struct {
 	SessionID string    // most recent OpenCode session ID (empty if none)
 	Status    string    // working or idle; empty if no session
 	Title     string    // OpenCode session title
+	Tokens    int       // total input+output tokens in the most recent session
+	Attached  bool      // true if a TUI client is attached to this worktree
 }
 
 // GenerateName returns a timestamped random name for a new worktree.
