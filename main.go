@@ -48,34 +48,41 @@ func main() {
 
 // cmdLocal handles: wt [name]
 func cmdLocal(args []string) {
-	repo, err := git.RepoRoot("")
-	if err != nil {
-		die("not in a git repo")
-	}
-
-	var name, wtDir string
 	if len(args) == 0 {
-		// Create new worktree
-		name = worktree.GenerateName()
-		wtDir = repo + "/.worktrees/" + name
+		// Create new local worktree
+		repo, err := git.RepoRoot("")
+		if err != nil {
+			die("not in a git repo")
+		}
+		name := worktree.GenerateName()
+		wtDir := repo + "/.worktrees/" + name
 		if err := git.WorktreeAdd("", repo, name); err != nil {
 			die("failed to create worktree: %v", err)
 		}
 		fmt.Printf("Created worktree: %s\n", name)
 		fmt.Printf("  resume:\n  wt %s\n", name)
-	} else {
-		name = args[0]
-		wtDir = repo + "/.worktrees/" + name
-		if !git.DirExists("", wtDir) {
-			// Not found locally — try remote
-			attachRemoteByName(name)
-			return
+		if err := execOpencode(wtDir); err != nil {
+			die("%v", err)
 		}
+		return
 	}
 
-	// Attach: exec opencode in the worktree
-	if err := execOpencode(wtDir); err != nil {
-		die("%v", err)
+	// Attach by name — search local and remote
+	name := args[0]
+	entry, ok := findWorktree(name)
+	if !ok {
+		die("worktree %q not found", name)
+	}
+	if !entry.Remote {
+		if err := execOpencode(entry.Dir); err != nil {
+			die("%v", err)
+		}
+	} else {
+		serverURL := opencode.ServerURL()
+		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
+		if err := execOpencodeAttach(serverURL, entry.Dir, sessionID); err != nil {
+			die("%v", err)
+		}
 	}
 }
 
@@ -111,9 +118,8 @@ func cmdRemote(args []string) {
 		if err := git.WorktreeAdd(host, repo, name); err != nil {
 			die("failed to create remote worktree: %v", err)
 		}
-		localPath := args[0]
 		fmt.Printf("Created worktree: %s\n", name)
-		fmt.Printf("  resume:\n  wt -r %s %s\n", localPath, name)
+		fmt.Printf("  resume:\n  wt %s\n", name)
 	} else {
 		name = args[1]
 		wtDir = repo + "/.worktrees/" + name
@@ -130,26 +136,27 @@ func cmdRemote(args []string) {
 	}
 }
 
-// attachRemoteByName searches remote worktrees for one matching the given name
-// and attaches to it. Dies if DEV_DESKTOP_HOST is unset or the name isn't found.
-func attachRemoteByName(name string) {
+// findWorktree discovers all worktrees (local and remote) and returns the one matching name.
+func findWorktree(name string) (worktree.Entry, bool) {
 	host := os.Getenv("DEV_DESKTOP_HOST")
-	if host == "" {
-		die("worktree %q not found locally and DEV_DESKTOP_HOST is not set", name)
+
+	localCh := make(chan []worktree.Entry, 1)
+	remoteCh := make(chan []worktree.Entry, 1)
+
+	go func() { localCh <- discover.ListLocal() }()
+	if host != "" {
+		go func() { remoteCh <- discover.ListRemote(host) }()
+	} else {
+		remoteCh <- nil
 	}
 
-	entries := discover.ListRemote(host)
-	for _, e := range entries {
+	all := append(<-localCh, <-remoteCh...)
+	for _, e := range all {
 		if e.Name == name {
-			serverURL := opencode.ServerURL()
-			sessionID := opencode.FindLatestSession(serverURL, e.Dir)
-			if err := execOpencodeAttach(serverURL, e.Dir, sessionID); err != nil {
-				die("%v", err)
-			}
-			return // unreachable — ExecAttach calls syscall.Exec
+			return e, true
 		}
 	}
-	die("worktree %q not found locally or on remote", name)
+	return worktree.Entry{}, false
 }
 
 // cmdLs handles: wt ls
@@ -199,7 +206,7 @@ wt — worktree session manager
 
 Usage:
   wt                        Create a new local worktree and attach
-  wt <name>                 Attach to an existing local worktree
+  wt <name>                 Attach to an existing worktree (local or remote)
   wt -r <path>              Create a new remote worktree and attach
   wt -r <path> <name>       Attach to an existing remote worktree
   wt ls                     List all worktrees (local and remote)
