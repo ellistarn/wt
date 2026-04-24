@@ -3,7 +3,16 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
+
+	"github.com/ellistarn/wt/pkg/discover"
+	"github.com/ellistarn/wt/pkg/display"
+	"github.com/ellistarn/wt/pkg/git"
+	"github.com/ellistarn/wt/pkg/opencode"
+	"github.com/ellistarn/wt/pkg/ssh"
+	"github.com/ellistarn/wt/pkg/worktree"
 )
 
 func main() {
@@ -39,7 +48,7 @@ func main() {
 
 // cmdLocal handles: wt [name]
 func cmdLocal(args []string) {
-	repo, err := gitRepoRoot("")
+	repo, err := git.RepoRoot("")
 	if err != nil {
 		die("not in a git repo")
 	}
@@ -47,9 +56,9 @@ func cmdLocal(args []string) {
 	var name, wtDir string
 	if len(args) == 0 {
 		// Create new worktree
-		name = generateName()
+		name = worktree.GenerateName()
 		wtDir = repo + "/.worktrees/" + name
-		if err := gitWorktreeAdd("", repo, name); err != nil {
+		if err := git.WorktreeAdd("", repo, name); err != nil {
 			die("failed to create worktree: %v", err)
 		}
 		fmt.Printf("Created worktree: %s\n", name)
@@ -57,7 +66,7 @@ func cmdLocal(args []string) {
 	} else {
 		name = args[0]
 		wtDir = repo + "/.worktrees/" + name
-		if !dirExists("", wtDir) {
+		if !git.DirExists("", wtDir) {
 			// Not found locally — try remote
 			attachRemoteByName(name)
 			return
@@ -65,7 +74,9 @@ func cmdLocal(args []string) {
 	}
 
 	// Attach: exec opencode in the worktree
-	execOpencode(wtDir)
+	if err := execOpencode(wtDir); err != nil {
+		die("%v", err)
+	}
 }
 
 // cmdRemote handles: wt -r <path> [name]
@@ -74,11 +85,20 @@ func cmdRemote(args []string) {
 		die("remote mode requires a repo path: wt -r <path> [name]")
 	}
 
-	host := sshHost()
-	remoteHome := resolveRemoteHome(host)
-	remotePath := toRemotePath(args[0], remoteHome)
+	host, err := ssh.Host()
+	if err != nil {
+		die("%v", err)
+	}
+	remoteHome, err := ssh.ResolveRemoteHome(host)
+	if err != nil {
+		die("%v", err)
+	}
+	remotePath, err := ssh.ToRemotePath(args[0], remoteHome)
+	if err != nil {
+		die("%v", err)
+	}
 
-	repo, err := gitRepoRoot(host, remotePath)
+	repo, err := git.RepoRoot(host, remotePath)
 	if err != nil {
 		die("not a git repo on remote: %s", remotePath)
 	}
@@ -86,9 +106,9 @@ func cmdRemote(args []string) {
 	var name, wtDir string
 	if len(args) < 2 {
 		// Create new worktree
-		name = generateName()
+		name = worktree.GenerateName()
 		wtDir = repo + "/.worktrees/" + name
-		if err := gitWorktreeAdd(host, repo, name); err != nil {
+		if err := git.WorktreeAdd(host, repo, name); err != nil {
 			die("failed to create remote worktree: %v", err)
 		}
 		localPath := args[0]
@@ -97,15 +117,17 @@ func cmdRemote(args []string) {
 	} else {
 		name = args[1]
 		wtDir = repo + "/.worktrees/" + name
-		if !dirExists(host, wtDir) {
+		if !git.DirExists(host, wtDir) {
 			die("worktree not found on remote: %s", wtDir)
 		}
 	}
 
 	// Attach: find most recent session, then opencode attach
-	serverURL := opencodeServerURL()
-	sessionID := findLatestSession(serverURL, wtDir)
-	execOpencodeAttach(serverURL, wtDir, sessionID)
+	serverURL := opencode.ServerURL()
+	sessionID := opencode.FindLatestSession(serverURL, wtDir)
+	if err := execOpencodeAttach(serverURL, wtDir, sessionID); err != nil {
+		die("%v", err)
+	}
 }
 
 // attachRemoteByName searches remote worktrees for one matching the given name
@@ -116,13 +138,15 @@ func attachRemoteByName(name string) {
 		die("worktree %q not found locally and DEV_DESKTOP_HOST is not set", name)
 	}
 
-	entries := listRemoteWorktrees(host)
+	entries := discover.ListRemote(host)
 	for _, e := range entries {
 		if e.Name == name {
-			serverURL := opencodeServerURL()
-			sessionID := findLatestSession(serverURL, e.Dir)
-			execOpencodeAttach(serverURL, e.Dir, sessionID)
-			return // unreachable — execOpencodeAttach calls syscall.Exec
+			serverURL := opencode.ServerURL()
+			sessionID := opencode.FindLatestSession(serverURL, e.Dir)
+			if err := execOpencodeAttach(serverURL, e.Dir, sessionID); err != nil {
+				die("%v", err)
+			}
+			return // unreachable — ExecAttach calls syscall.Exec
 		}
 	}
 	die("worktree %q not found locally or on remote", name)
@@ -133,43 +157,40 @@ func cmdLs(remoteOnly bool) {
 	host := os.Getenv("DEV_DESKTOP_HOST")
 
 	// Run local and remote discovery concurrently
-	type result struct {
-		entries []WorktreeEntry
-	}
-	localCh := make(chan result, 1)
-	remoteCh := make(chan result, 1)
+	localCh := make(chan []worktree.Entry, 1)
+	remoteCh := make(chan []worktree.Entry, 1)
 
 	if !remoteOnly {
-		go func() { localCh <- result{listLocalWorktrees()} }()
+		go func() { localCh <- discover.ListLocal() }()
 	} else {
-		localCh <- result{}
+		localCh <- nil
 	}
 
 	if host != "" {
-		go func() { remoteCh <- result{listRemoteWorktrees(host)} }()
+		go func() { remoteCh <- discover.ListRemote(host) }()
 	} else {
 		if remoteOnly {
 			die("DEV_DESKTOP_HOST is not set")
 		}
-		remoteCh <- result{}
+		remoteCh <- nil
 	}
 
-	local := (<-localCh).entries
-	remote := (<-remoteCh).entries
+	local := <-localCh
+	remote := <-remoteCh
 
-	enrichLocalWithSessions(local)
+	opencode.EnrichLocal(local)
 	if host != "" {
-		enrichRemoteWithSessions(host, remote)
+		opencode.EnrichRemote(host, remote)
 	}
 
 	all := append(local, remote...)
-	sortWorktrees(all)
+	worktree.Sort(all)
 
 	if len(all) == 0 {
 		fmt.Println("No worktrees found.")
 		return
 	}
-	printWorktreeTable(all)
+	display.PrintTable(all)
 }
 
 func printUsage() {
@@ -194,4 +215,33 @@ Flags:
 func die(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "wt: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// execOpencode replaces the current process with opencode in the given directory.
+func execOpencode(dir string) error {
+	binary, err := exec.LookPath("opencode")
+	if err != nil {
+		return fmt.Errorf("opencode not found in PATH")
+	}
+
+	if err := os.Chdir(dir); err != nil {
+		return fmt.Errorf("cannot cd to %s: %w", dir, err)
+	}
+
+	return syscall.Exec(binary, []string{"opencode"}, os.Environ())
+}
+
+// execOpencodeAttach replaces the current process with opencode attach.
+func execOpencodeAttach(serverURL, dir, sessionID string) error {
+	binary, err := exec.LookPath("opencode")
+	if err != nil {
+		return fmt.Errorf("opencode not found in PATH")
+	}
+
+	args := []string{"opencode", "attach", serverURL, "--dir", dir}
+	if sessionID != "" {
+		args = append(args, "--session", sessionID)
+	}
+
+	return syscall.Exec(binary, args, os.Environ())
 }

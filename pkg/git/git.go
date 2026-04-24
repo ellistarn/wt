@@ -1,4 +1,4 @@
-package main
+package git
 
 import (
 	"fmt"
@@ -6,11 +6,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/ellistarn/wt/pkg/ssh"
 )
 
-// gitRepoRoot returns the repo root. If host is empty, runs locally.
+// RepoRoot returns the repo root. If host is empty, runs locally.
 // For remote, pass the remote directory as extra args.
-func gitRepoRoot(host string, dir ...string) (string, error) {
+func RepoRoot(host string, dir ...string) (string, error) {
 	if host == "" {
 		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 		if err != nil {
@@ -27,14 +29,15 @@ func gitRepoRoot(host string, dir ...string) (string, error) {
 	if len(dir) > 0 {
 		d = dir[0]
 	}
-	out, err := sshRun(host, fmt.Sprintf("git -C '%s' rev-parse --show-toplevel", d))
+	out, err := ssh.Run(host, fmt.Sprintf("git -C '%s' rev-parse --show-toplevel", d))
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
 }
 
-func gitWorktreeAdd(host, repo, name string) error {
+// WorktreeAdd creates a new worktree at <repo>/.worktrees/<name> on branch <name>.
+func WorktreeAdd(host, repo, name string) error {
 	if host == "" {
 		cmd := exec.Command("git", "worktree", "add", ".worktrees/"+name, "-b", name)
 		cmd.Dir = repo
@@ -43,15 +46,16 @@ func gitWorktreeAdd(host, repo, name string) error {
 		return cmd.Run()
 	}
 	script := fmt.Sprintf("cd '%s' && git worktree add '.worktrees/%s' -b '%s'", repo, name, name)
-	_, err := sshRun(host, script)
+	_, err := ssh.Run(host, script)
 	return err
 }
 
-func dirExists(host, path string) bool {
+// DirExists checks whether a directory exists, locally or over SSH.
+func DirExists(host, path string) bool {
 	if host == "" {
 		info, err := os.Stat(path)
 		return err == nil && info.IsDir()
 	}
-	_, err := sshRun(host, fmt.Sprintf("test -d '%s'", path))
+	_, err := ssh.Run(host, fmt.Sprintf("test -d '%s'", path))
 	return err == nil
 }
