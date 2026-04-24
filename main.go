@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/ellistarn/wt/pkg/discover"
@@ -182,13 +183,28 @@ func cmdLs(remoteOnly bool) {
 		remoteCh <- nil
 	}
 
-	local := <-localCh
-	remote := <-remoteCh
+	// Discover and enrich in parallel — each side enriches as soon as
+	// its discovery finishes, without waiting for the other.
+	var local, remote []worktree.Entry
+	var wg sync.WaitGroup
 
-	opencode.EnrichLocal(local)
-	if host != "" {
-		opencode.EnrichRemote(host, remote)
-	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		local = <-localCh
+		opencode.EnrichLocal(local)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		remote = <-remoteCh
+		if host != "" {
+			opencode.EnrichRemote(host, remote)
+		}
+	}()
+
+	wg.Wait()
 
 	all := append(local, remote...)
 	worktree.Sort(all)

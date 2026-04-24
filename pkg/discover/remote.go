@@ -1,7 +1,7 @@
 package discover
 
 import (
-	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
@@ -10,19 +10,26 @@ import (
 )
 
 // ListRemote finds all worktrees on the remote host.
+// Uses find to walk the home directory (no depth limit from hardcoded globs),
+// prunes hidden dirs for speed, and collects worktree metadata including
+// timestamps in a single SSH call.
 func ListRemote(host string) []worktree.Entry {
 	script := `
 set -eu
 home=$(readlink -f "$HOME")
-shopt -s nullglob
-for wt_dir in "$home"/.worktrees "$home"/*/.worktrees "$home"/*/*/.worktrees "$home"/*/*/*/.worktrees "$home"/*/*/*/*/.worktrees "$home"/*/*/*/*/*/.worktrees; do
+find "$home" -maxdepth 10 -type d \( -name .worktrees -print -prune -o -name '.*' -prune \) | while IFS= read -r wt_dir; do
     repo="${wt_dir%/.worktrees}"
     if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
         git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v repo="$repo" '
             /^worktree / { wt=$2 }
             /^branch / {
                 br=$2; sub(/^refs\/heads\//, "", br)
-                if (wt ~ /\/.worktrees\//) print wt "\t" br "\t" repo
+                if (wt ~ /\/.worktrees\//) {
+                    cmd = "stat -c %Y \"" wt "/.git\" 2>/dev/null || echo 0"
+                    cmd | getline ts
+                    close(cmd)
+                    print wt "\t" br "\t" repo "\t" ts
+                }
             }
         '
     fi
@@ -33,43 +40,23 @@ done
 		return nil
 	}
 
-	// Collect worktree paths to batch-stat their .git files for creation time
-	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) == 0 {
-		return nil
-	}
-
-	// Build a batch stat command for all .git files
-	var statPaths []string
-	for _, line := range lines {
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) >= 1 {
-			statPaths = append(statPaths, fmt.Sprintf("'%s/.git'", parts[0]))
-		}
-	}
-	statScript := fmt.Sprintf("stat -c '%%Y' %s 2>/dev/null || true", strings.Join(statPaths, " "))
-	statOut, _ := ssh.Run(host, statScript)
-	statLines := strings.Split(strings.TrimSpace(statOut), "\n")
-
 	var entries []worktree.Entry
-	for i, line := range lines {
-		parts := strings.SplitN(line, "\t", 3)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 4)
 		if len(parts) < 3 {
 			continue
 		}
 		e := worktree.Entry{
 			Dir:    parts[0],
-			Name:   parts[1],
+			Name:   path.Base(parts[0]),
 			Repo:   parts[2],
 			Remote: true,
 		}
-		if i < len(statLines) {
-			if ts, err := strconv.ParseInt(strings.TrimSpace(statLines[i]), 10, 64); err == nil {
+		if len(parts) >= 4 {
+			if ts, err := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64); err == nil {
 				e.CreatedAt = worktree.TimeUnix(ts)
 			}
 		}
