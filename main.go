@@ -37,7 +37,7 @@ func main() {
 
 	// Dispatch
 	if len(remaining) > 0 && remaining[0] == "ls" {
-		cmdLs(remote)
+		cmdLs()
 		return
 	}
 
@@ -93,10 +93,10 @@ func cmdLocal(args []string) {
 	}
 }
 
-// cmdRemote handles: wt -r <path> [name]
+// cmdRemote handles: wt -r <path>
 func cmdRemote(args []string) {
 	if len(args) == 0 {
-		die("remote mode requires a repo path: wt -r <path> [name]")
+		die("remote mode requires a repo path: wt -r <path>")
 	}
 
 	host, err := ssh.Host()
@@ -117,22 +117,13 @@ func cmdRemote(args []string) {
 		die("not a git repo on remote: %s", remotePath)
 	}
 
-	var name, wtDir string
-	if len(args) < 2 {
-		// Create new worktree
-		name = worktree.GenerateName()
-		wtDir = repo + "/.worktrees/" + name
-		if err := git.WorktreeAdd(host, repo, name); err != nil {
-			die("failed to create remote worktree: %v", err)
-		}
-		fmt.Printf("wt %s\n", name)
-	} else {
-		name = args[1]
-		wtDir = repo + "/.worktrees/" + name
-		if !git.DirExists(host, wtDir) {
-			die("worktree not found on remote: %s", wtDir)
-		}
+	// Create new worktree
+	name := worktree.GenerateName()
+	wtDir := repo + "/.worktrees/" + name
+	if err := git.WorktreeAdd(host, repo, name); err != nil {
+		die("failed to create remote worktree: %v", err)
 	}
+	fmt.Printf("wt %s\n", name)
 
 	serverURL := opencode.RemoteServerURL()
 	sessionID := opencode.FindLatestSession(serverURL, wtDir)
@@ -165,25 +156,18 @@ func findWorktree(name string) (worktree.Entry, bool) {
 }
 
 // cmdLs handles: wt ls
-func cmdLs(remoteOnly bool) {
+func cmdLs() {
 	host := os.Getenv("DEV_DESKTOP_HOST")
 
 	// Run local and remote discovery concurrently
 	localCh := make(chan []worktree.Entry, 1)
 	remoteCh := make(chan []worktree.Entry, 1)
 
-	if !remoteOnly {
-		go func() { localCh <- discover.ListLocal() }()
-	} else {
-		localCh <- nil
-	}
+	go func() { localCh <- discover.ListLocal() }()
 
 	if host != "" {
 		go func() { remoteCh <- discover.ListRemote(host) }()
 	} else {
-		if remoteOnly {
-			die("DEV_DESKTOP_HOST is not set")
-		}
 		remoteCh <- nil
 	}
 
@@ -227,10 +211,8 @@ wt — worktree session manager
 Usage:
   wt                        Create a new local worktree and attach
   wt <name>                 Attach to an existing worktree (local or remote)
+  wt ls                     List all worktrees
   wt -r <path>              Create a new remote worktree and attach
-  wt -r <path> <name>       Attach to an existing remote worktree
-  wt ls                     List all worktrees (local and remote)
-  wt -r ls                  List remote worktrees only
 
 Flags:
   -r, --remote              Operate on the remote dev desktop
