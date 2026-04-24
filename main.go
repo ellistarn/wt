@@ -66,7 +66,6 @@ func cmdLocal(args []string) {
 		if err := git.WorktreeAdd("", repo, name); err != nil {
 			die("failed to create worktree: %v", err)
 		}
-		fmt.Printf("Created worktree: %s\n", name)
 		fmt.Printf("wt %s\n", name)
 		if err := attach(serverURL, wtDir, ""); err != nil {
 			die("%v", err)
@@ -126,7 +125,6 @@ func cmdRemote(args []string) {
 		if err := git.WorktreeAdd(host, repo, name); err != nil {
 			die("failed to create remote worktree: %v", err)
 		}
-		fmt.Printf("Created worktree: %s\n", name)
 		fmt.Printf("wt %s\n", name)
 	} else {
 		name = args[1]
