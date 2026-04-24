@@ -41,9 +41,10 @@ func WorktreeAdd(host, repo, name string) error {
 	if host == "" {
 		cmd := exec.Command("git", "worktree", "add", ".worktrees/"+name, "-b", name)
 		cmd.Dir = repo
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
 	}
 	script := fmt.Sprintf("cd '%s' && git worktree add '.worktrees/%s' -b '%s'", repo, name, name)
 	_, err := ssh.Run(host, script)
