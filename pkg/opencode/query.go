@@ -85,7 +85,9 @@ func queryFromDB(host, dbFilePath string, dirs []string) []sessionRecord {
 		b, e := c.Output()
 		out, err = string(b), e
 	} else {
-		cmd := fmt.Sprintf("sqlite3 -separator '\t' \"%s\" \"%s\"", dbFilePath, query)
+		// Escape double quotes so the LIKE pattern survives shell double-quoting.
+		escaped := strings.ReplaceAll(query, `"`, `\"`)
+		cmd := fmt.Sprintf("sqlite3 -separator '\t' \"%s\" \"%s\"", dbFilePath, escaped)
 		out, err = ssh.Run(host, cmd)
 	}
 	if err != nil {

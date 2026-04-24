@@ -108,7 +108,7 @@ Columns:
 
 | Column | Value |
 |--------|-------|
-| WORKTREE | Branch name (equals the worktree directory name). |
+| WORKTREE | Worktree directory name (the stable identifier even if the branch is renamed). |
 | STATUS | `working` (agent generating), `idle` (session exists, agent not generating). |
 | TITLE | Session title, auto-generated from the first prompt. |
 | AGE | When the worktree was created. |
