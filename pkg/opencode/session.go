@@ -21,9 +21,17 @@ type session struct {
 	} `json:"time"`
 }
 
-// ServerURL returns the OpenCode server URL from environment or default.
-func ServerURL() string {
-	if u := os.Getenv("WT_SERVER"); u != "" {
+// LocalServerURL returns the local OpenCode server URL.
+func LocalServerURL() string {
+	if u := os.Getenv("WT_LOCAL_SERVER"); u != "" {
+		return u
+	}
+	return "http://localhost:9000"
+}
+
+// RemoteServerURL returns the remote OpenCode server URL.
+func RemoteServerURL() string {
+	if u := os.Getenv("WT_REMOTE_SERVER"); u != "" {
 		return u
 	}
 	port := os.Getenv("DEV_DESKTOP_TUNNEL_PORT")
@@ -31,6 +39,26 @@ func ServerURL() string {
 		port = "9847"
 	}
 	return fmt.Sprintf("http://opencode.etarn:%s", port)
+}
+
+// CheckHealth verifies that the OpenCode server is reachable.
+func CheckHealth(serverURL string) error {
+	resp, err := httpGet(serverURL + "/global/health")
+	if err != nil {
+		return fmt.Errorf("opencode server not reachable at %s", serverURL)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// checkHealthFast is a quick probe for use before batch operations.
+func checkHealthFast(serverURL string) error {
+	resp, err := httpGetTimeout(serverURL+"/global/health", 1*time.Second)
+	if err != nil {
+		return fmt.Errorf("opencode server not reachable at %s", serverURL)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // FindLatestSession queries the OpenCode server for the most recent session
@@ -60,7 +88,11 @@ func FindLatestSession(serverURL, directory string) string {
 }
 
 func httpGet(u string) (*http.Response, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
+	return httpGetTimeout(u, 5*time.Second)
+}
+
+func httpGetTimeout(u string, timeout time.Duration) (*http.Response, error) {
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(u)
 	if err != nil {
 		return nil, err

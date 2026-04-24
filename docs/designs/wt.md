@@ -8,9 +8,8 @@ gets an isolated working copy on its own branch, confined to its own directory.
 OpenCode enforces the boundary -- given a directory, it stays in it.
 
 Agents run for minutes or hours, and the laptop closes. Local processes die. Work
-must survive beyond the laptop. This requires a persistent remote environment: an
-OpenCode server on a dev desktop that runs continuously, with sessions that outlive
-any client connection.
+must survive beyond the laptop. This requires a persistent environment: OpenCode
+servers that run continuously, with sessions that outlive any client connection.
 
 The developer thinks in worktrees, not sessions, ports, or connection strings.
 "Show me everything in flight. Attach to that one." `wt` binds git worktrees to
@@ -32,28 +31,37 @@ managed from within OpenCode, not by this tool.
 A session is **working** when the agent is actively generating a response, and
 **idle** otherwise. A worktree with no session has no status.
 
-The **OpenCode server** is a persistent process on the dev desktop. One server
-hosts all worktrees across all repos. Every API endpoint accepts a `directory`
-parameter to scope requests to a specific worktree. TUI clients are stateless --
-they re-fetch everything on connect.
+An **OpenCode server** is a persistent process running `opencode serve`. One
+server hosts all worktrees across all repos. Every API endpoint accepts a
+`directory` parameter to scope requests to a specific worktree. TUI clients are
+stateless -- they re-fetch everything on connect.
+
+Multiple TUI clients can attach to the same server and session simultaneously.
+OpenCode synchronizes state across clients via server-sent events.
 
 ## Topology
 
+Local and remote worktrees use the same architecture: a persistent OpenCode
+server with TUI clients attached via `opencode attach`.
+
 ### Local
 
-OpenCode runs with its embedded server. The worktree and session live on the
-laptop. Sessions do not survive laptop close.
+The OpenCode server runs on the laptop as a daemon (e.g. launchd) at a known
+port (`localhost:9000`). Worktrees and sessions live on the laptop.
 
 ```
-wt
-└── opencode              # in <repo>/.worktrees/<name>
+laptop
+  opencode serve --port 9000         # daemon, always running
+       │
+  wt <name> ──> opencode attach http://localhost:9000
+                  --dir <repo>/.worktrees/<name>
+                  --session <id>
 ```
 
 ### Remote
 
-The worktree lives on the dev desktop, created over SSH. A persistent OpenCode
-server manages the session. The TUI runs locally, connecting to the remote server
-through an SSH tunnel.
+The OpenCode server runs on the dev desktop. TUI clients connect through an SSH
+tunnel.
 
 ```
 laptop                                  dev desktop
@@ -61,10 +69,11 @@ laptop                                  dev desktop
                                                 │
   opencode attach ────tunnel────────> opencode serve
     --dir <remote worktree path>
+    --session <id>
 ```
 
-Sessions survive laptop close. On reattach, the TUI reconnects and loads the full
-session state, including any work the agent completed while disconnected.
+Sessions survive laptop close. On reattach, the TUI reconnects and loads the
+full session state, including any work the agent completed while disconnected.
 
 ## CLI
 
@@ -74,8 +83,6 @@ Create or resume a worktree.
 
 - No args: create a new worktree in the current repo. Attach.
 - With `name`: resume `<repo>/.worktrees/<name>`. Attach.
-
-Attach: run `opencode` in the worktree directory.
 
 ### `wt -r <path> [name]`
 
@@ -87,9 +94,19 @@ Create or resume a remote worktree.
 - Without `name`: create a new worktree. Attach.
 - With `name`: resume existing worktree. Attach.
 
-Attach: query the OpenCode server for the most recent session in the worktree,
-then `opencode attach` to the remote server with the worktree directory and
-session ID.
+### Attach
+
+All attach operations follow the same steps:
+
+1. Resolve the server URL (local: `http://localhost:9000`, remote: tunnel URL).
+2. Health check: `GET /global/health`. Fail with a clear message if the server
+   is not running.
+3. Query `GET /session` filtered by the worktree directory. Select the most
+   recently updated session.
+4. Run `opencode attach <server> --dir <dir> --session <id>`.
+
+If no session exists for the worktree, `opencode attach` is run without
+`--session`. OpenCode creates a new session on first prompt.
 
 ### `wt ls`
 
@@ -97,11 +114,21 @@ List all worktrees and their session status. Local worktrees (all repos under
 `$HOME`) and remote worktrees (all repos on the dev desktop) are discovered
 concurrently and merged into a single table sorted by most recent activity.
 
+Session metadata is fetched from the OpenCode server API, not from the database
+directly. For each server (local and remote):
+
+1. `GET /session?directory=<dir>` — per worktree, returns sessions across
+   projects. The most recently updated session is selected.
+2. `GET /session/<id>/message` — per session, sums assistant message tokens
+   for session size and derives working/idle from whether the last assistant
+   message has completed.
+
 ```
-WORKTREE            STATUS    TITLE                           AGE     ACTIVITY    REPO
-0423T1430-12847     working   Fix auth handler validation     3h ago  just now    [remote] /home/user/.../acme/api
-0423T1600-4419      idle      Refactor config parser          1d ago  5m ago      /Users/user/.../acme/api
-0421T1100-5531      -         -                               2d ago  -           [remote] /home/user/.../acme/web
+WORKTREE            TITLE                           STATUS    ACTIVITY  TOKENS  REPO                              AGE
+0423T1430-12847     Fix auth handler validation      attached  now       150k    [remote] /home/user/.../acme/api   3h
+0423T1600-4419      Refactor config parser           idle      5m        42k     /Users/user/.../acme/api           1d
+0423T1700-8812      Migrate database schema          working   now       12k     [remote] /home/user/.../acme/api   2h
+0421T1100-5531      -                                -         -         -       [remote] /home/user/.../acme/web   2d
 ```
 
 Columns:
@@ -109,43 +136,45 @@ Columns:
 | Column | Value |
 |--------|-------|
 | WORKTREE | Worktree directory name (the stable identifier even if the branch is renamed). |
-| STATUS | `working` (agent generating), `idle` (session exists, agent not generating). |
 | TITLE | Session title, auto-generated from the first prompt. |
-| AGE | When the worktree was created. |
-| ACTIVITY | When the most recent session in this worktree was last active. |
+| STATUS | Highest-priority state: `attached` (TUI client connected), `working` (agent generating, no client), `idle` (session exists, no activity). Attachment is detected by scanning local `opencode attach` processes. No session shows `-`. |
+| ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). |
+| TOKENS | Total input + output tokens across all assistant messages in the most recent session. Formatted as `12k`, `150k`. |
 | REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
+| AGE | When the worktree was created. |
 
 `-` in any column means the value is unavailable. A worktree with no session
-shows `-` for UPDATED, STATUS, and TITLE. Attaching to such a worktree creates
-a session; subsequent listings show its status and title.
+shows `-` for STATUS, ACTIVITY, TOKENS, and TITLE. Attaching to such a worktree
+creates a session on first prompt; subsequent listings show its status and title.
 
 ## Reconnection
 
 1. Laptop opens. SSH tunnel restarts.
 2. `wt ls` shows everything in flight.
-3. `wt -r ~/src/acme/api 0423T1430-12847` resumes.
+3. `wt 0423T1430-12847` resumes (works for both local and remote worktrees).
 
 ## Assumptions
 
 - An SSH tunnel to the dev desktop is established and maintained externally.
-- The OpenCode server runs persistently on the dev desktop, managed externally.
+- The OpenCode server runs persistently on both the laptop (daemon) and the dev
+  desktop, managed externally.
 - Worktree cleanup is handled externally.
 
 ## Implementation
 
 Go binary. Shells out to `ssh` for remote git operations and to `opencode` for
-TUI attachment. Queries the OpenCode SQLite database for session metadata in
-listings. Queries the OpenCode HTTP API for session discovery when attaching
-remotely.
+TUI attachment. Queries the OpenCode HTTP API for session metadata in listings
+and for session discovery when attaching.
 
 ## Scoped Out
 
 - Worktree cleanup.
-- OpenCode server lifecycle.
+- OpenCode server lifecycle (daemon setup, launchd plist).
 - SSH tunnel management.
 - Auto-reattach on laptop wake.
 - Session lifecycle (new, fork). Managed from within OpenCode.
 - Multiple remote hosts.
+- Conflict detection when running bare `opencode` alongside the daemon.
 
 ## Rejected Alternatives
 
@@ -161,3 +190,11 @@ and reconnects cleanly.
 
 **Separate local/remote tools** — Same workflow, different transport. One tool with
 a `-r` flag.
+
+**Embedded server for local** — Running bare `opencode` starts a new server per
+invocation. Double-attaching creates a second server with an empty session instead
+of joining the existing one. A persistent server with `opencode attach` gives
+consistent multi-client behavior.
+
+**SQLite for session metadata** — Querying the OpenCode database directly is a
+layer violation. The HTTP API is the stable contract.

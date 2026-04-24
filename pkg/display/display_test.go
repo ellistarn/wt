@@ -1,0 +1,170 @@
+package display
+
+import (
+	"bytes"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ellistarn/wt/pkg/worktree"
+)
+
+func TestFormatStatus(t *testing.T) {
+	tests := []struct {
+		status   string
+		attached bool
+		want     string
+	}{
+		{"", false, "-"},
+		{"idle", false, "idle"},
+		{"working", false, "working"},
+		{"idle", true, "attached"},
+		{"working", true, "attached"},
+	}
+	for _, tt := range tests {
+		got := formatStatus(tt.status, tt.attached)
+		if got != tt.want {
+			t.Errorf("formatStatus(%q, %v) = %q, want %q", tt.status, tt.attached, got, tt.want)
+		}
+	}
+}
+
+func TestFormatTokens(t *testing.T) {
+	tests := []struct {
+		tokens int
+		want   string
+	}{
+		{0, "-"},
+		{500, "500"},
+		{999, "999"},
+		{1000, "1.0k"},
+		{1500, "1.5k"},
+		{9999, "10.0k"},
+		{10000, "10k"},
+		{42000, "42k"},
+		{150000, "150k"},
+		{999999, "999k"},
+		{1000000, "1.0M"},
+		{1500000, "1.5M"},
+		{10000000, "10M"},
+		{25000000, "25M"},
+	}
+	for _, tt := range tests {
+		got := formatTokens(tt.tokens)
+		if got != tt.want {
+			t.Errorf("formatTokens(%d) = %q, want %q", tt.tokens, got, tt.want)
+		}
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		t    time.Time
+		want string
+	}{
+		{time.Time{}, "-"},
+		{now.Add(-30 * time.Second), "now"},
+		{now.Add(-5 * time.Minute), "5m"},
+		{now.Add(-3 * time.Hour), "3h"},
+		{now.Add(-24 * time.Hour), "1d"},
+		{now.Add(-72 * time.Hour), "3d"},
+	}
+	for _, tt := range tests {
+		got := formatDuration(tt.t, now)
+		if got != tt.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tt.t, got, tt.want)
+		}
+	}
+}
+
+func TestFormatRepo(t *testing.T) {
+	tests := []struct {
+		repo   string
+		remote bool
+		want   string
+	}{
+		{"/Users/etarn/go/src/github.com/ellistarn/wt", false, "/Users/etarn/.../ellistarn/wt"},
+		{"/Users/etarn/go/src/github.com/ellistarn/wt", true, "[remote] /Users/etarn/.../ellistarn/wt"},
+		{"/short/path", false, "/short/path"},
+		{"/short/path", true, "[remote] /short/path"},
+	}
+	for _, tt := range tests {
+		got := formatRepo(tt.repo, tt.remote)
+		if got != tt.want {
+			t.Errorf("formatRepo(%q, %v) = %q, want %q", tt.repo, tt.remote, got, tt.want)
+		}
+	}
+}
+
+func TestPrintTable(t *testing.T) {
+	now := time.Now()
+	entries := []worktree.Entry{
+		{
+			Name:      "0424T0907-93511",
+			Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T0907-93511",
+			Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
+			Status:    "idle",
+			Title:     "Fix auth handler",
+			Tokens:    42000,
+			CreatedAt: now.Add(-3 * time.Hour),
+			UpdatedAt: now.Add(-5 * time.Minute),
+		},
+		{
+			Name:      "0424T1035-627",
+			Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T1035-627",
+			Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
+			CreatedAt: now.Add(-1 * time.Hour),
+		},
+	}
+
+	// Capture stdout by swapping os.Stdout with a pipe.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+
+	PrintTable(entries)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (header + 2 rows), got %d:\n%s", len(lines), output)
+	}
+
+	// Header should have the right columns.
+	header := lines[0]
+	for _, col := range []string{"WORKTREE", "TITLE", "STATUS", "ACTIVITY", "TOKENS", "REPO", "AGE"} {
+		if !strings.Contains(header, col) {
+			t.Errorf("header missing column %q: %s", col, header)
+		}
+	}
+
+	// First row: idle session with activity and tokens.
+	if !strings.Contains(lines[1], "idle") {
+		t.Errorf("expected 'idle' in row 1: %s", lines[1])
+	}
+	if !strings.Contains(lines[1], "5m") {
+		t.Errorf("expected '5m' activity in row 1: %s", lines[1])
+	}
+	if !strings.Contains(lines[1], "42k") {
+		t.Errorf("expected '42k' tokens in row 1: %s", lines[1])
+	}
+	if !strings.Contains(lines[1], "Fix auth handler") {
+		t.Errorf("expected title in row 1: %s", lines[1])
+	}
+
+	// Second row: no session, dashes everywhere.
+	if !strings.Contains(lines[2], "0424T1035-627") {
+		t.Errorf("expected worktree name in row 2: %s", lines[2])
+	}
+}

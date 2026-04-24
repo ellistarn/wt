@@ -50,6 +50,11 @@ func main() {
 
 // cmdLocal handles: wt [name]
 func cmdLocal(args []string) {
+	serverURL := opencode.LocalServerURL()
+	if err := opencode.CheckHealth(serverURL); err != nil {
+		die("%v", err)
+	}
+
 	if len(args) == 0 {
 		// Create new local worktree
 		repo, err := git.RepoRoot("")
@@ -63,7 +68,7 @@ func cmdLocal(args []string) {
 		}
 		fmt.Printf("Created worktree: %s\n", name)
 		fmt.Printf("wt %s\n", name)
-		if err := runOpencode(wtDir); err != nil {
+		if err := attach(serverURL, wtDir, ""); err != nil {
 			die("%v", err)
 		}
 		return
@@ -76,13 +81,14 @@ func cmdLocal(args []string) {
 		die("worktree %q not found", name)
 	}
 	if !entry.Remote {
-		if err := runOpencode(entry.Dir); err != nil {
+		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
+		if err := attach(serverURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
 	} else {
-		serverURL := opencode.ServerURL()
-		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
-		if err := runOpencodeAttach(serverURL, entry.Dir, sessionID); err != nil {
+		remoteURL := opencode.RemoteServerURL()
+		sessionID := opencode.FindLatestSession(remoteURL, entry.Dir)
+		if err := attach(remoteURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
 	}
@@ -130,9 +136,9 @@ func cmdRemote(args []string) {
 		}
 	}
 
-	serverURL := opencode.ServerURL()
+	serverURL := opencode.RemoteServerURL()
 	sessionID := opencode.FindLatestSession(serverURL, wtDir)
-	if err := runOpencodeAttach(serverURL, wtDir, sessionID); err != nil {
+	if err := attach(serverURL, wtDir, sessionID); err != nil {
 		die("%v", err)
 	}
 }
@@ -192,7 +198,7 @@ func cmdLs(remoteOnly bool) {
 	go func() {
 		defer wg.Done()
 		local = <-localCh
-		opencode.EnrichLocal(local)
+		opencode.Enrich(opencode.LocalServerURL(), local)
 	}()
 
 	wg.Add(1)
@@ -200,7 +206,7 @@ func cmdLs(remoteOnly bool) {
 		defer wg.Done()
 		remote = <-remoteCh
 		if host != "" {
-			opencode.EnrichRemote(host, remote)
+			opencode.Enrich(opencode.RemoteServerURL(), remote)
 		}
 	}()
 
@@ -240,22 +246,8 @@ func die(format string, args ...any) {
 	os.Exit(1)
 }
 
-// runOpencode runs opencode as a subprocess in the given directory, clearing the
-// terminal on exit to remove opencode's startup banner from scrollback.
-func runOpencode(dir string) error {
-	binary, err := exec.LookPath("opencode")
-	if err != nil {
-		return fmt.Errorf("opencode not found in PATH")
-	}
-	if err := os.Chdir(dir); err != nil {
-		return fmt.Errorf("cannot cd to %s: %w", dir, err)
-	}
-	return runTUI(exec.Command(binary))
-}
-
-// runOpencodeAttach runs opencode attach as a subprocess, clearing the terminal
-// on exit to remove opencode's startup banner from scrollback.
-func runOpencodeAttach(serverURL, dir, sessionID string) error {
+// attach runs opencode attach as a subprocess, connecting to the given server.
+func attach(serverURL, dir, sessionID string) error {
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
 		return fmt.Errorf("opencode not found in PATH")
