@@ -98,22 +98,22 @@ List all worktrees and their session status. Local worktrees (all repos under
 concurrently and merged into a single table sorted by most recent activity.
 
 ```
-  UPDATED     CREATED     WORKTREE            REPO                                STATUS    TITLE
-  just now    3h ago      0423T1430-12847     [remote] /home/user/.../acme/api    working   Fix auth handler validation
-  5m ago      1d ago      0423T1600-4419      /Users/user/.../acme/api            idle      Refactor config parser
-  -           2d ago      0421T1100-5531      [remote] /home/user/.../acme/web    -         -
+WORKTREE            STATUS    TITLE                           AGE     ACTIVITY    REPO
+0423T1430-12847     working   Fix auth handler validation     3h ago  just now    [remote] /home/user/.../acme/api
+0423T1600-4419      idle      Refactor config parser          1d ago  5m ago      /Users/user/.../acme/api
+0421T1100-5531      -         -                               2d ago  -           [remote] /home/user/.../acme/web
 ```
 
 Columns:
 
 | Column | Value |
 |--------|-------|
-| UPDATED | When the most recent session in this worktree was last active. |
-| CREATED | When the worktree was created. |
 | WORKTREE | Branch name (equals the worktree directory name). |
-| REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
 | STATUS | `working` (agent generating), `idle` (session exists, agent not generating). |
 | TITLE | Session title, auto-generated from the first prompt. |
+| AGE | When the worktree was created. |
+| ACTIVITY | When the most recent session in this worktree was last active. |
+| REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
 
 `-` in any column means the value is unavailable. A worktree with no session
 shows `-` for UPDATED, STATUS, and TITLE. Attaching to such a worktree creates

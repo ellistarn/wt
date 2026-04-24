@@ -14,7 +14,7 @@ import (
 func PrintTable(entries []worktree.Entry) {
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 
-	fmt.Fprintf(w, "  UPDATED\tCREATED\tWORKTREE\tREPO\tSTATUS\tTITLE\n")
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tAGE\tACTIVITY\tREPO\n")
 
 	now := time.Now()
 	for _, e := range entries {
@@ -26,10 +26,10 @@ func PrintTable(entries []worktree.Entry) {
 		if title == "" {
 			title = "-"
 		}
-		updated := formatAge(e.UpdatedAt, now)
-		created := formatAge(e.CreatedAt, now)
+		age := formatAge(e.CreatedAt, now)
+		activity := formatAge(e.UpdatedAt, now)
 		repo := formatRepo(e.Repo, e.Remote)
-		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n", updated, created, e.Name, repo, status, title)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, age, activity, repo)
 	}
 
 	w.Flush()
