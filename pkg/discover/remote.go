@@ -15,7 +15,7 @@ func ListRemote(host string) []worktree.Entry {
 set -eu
 home=$(readlink -f "$HOME")
 shopt -s nullglob
-for wt_dir in "$home"/*/.worktrees "$home"/*/*/.worktrees "$home"/*/*/*/.worktrees "$home"/*/*/*/*/.worktrees "$home"/*/*/*/*/*/.worktrees; do
+for wt_dir in "$home"/.worktrees "$home"/*/.worktrees "$home"/*/*/.worktrees "$home"/*/*/*/.worktrees "$home"/*/*/*/*/.worktrees "$home"/*/*/*/*/*/.worktrees; do
     repo="${wt_dir%/.worktrees}"
     if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
         git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v repo="$repo" '
