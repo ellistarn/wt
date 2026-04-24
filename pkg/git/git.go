@@ -2,7 +2,6 @@ package git
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -51,12 +50,3 @@ func WorktreeAdd(host, repo, name string) error {
 	return err
 }
 
-// DirExists checks whether a directory exists, locally or over SSH.
-func DirExists(host, path string) bool {
-	if host == "" {
-		info, err := os.Stat(path)
-		return err == nil && info.IsDir()
-	}
-	_, err := ssh.Run(host, fmt.Sprintf("test -d '%s'", path))
-	return err == nil
-}

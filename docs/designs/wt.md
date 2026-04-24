@@ -84,15 +84,14 @@ Create or resume a worktree.
 - No args: create a new worktree in the current repo. Attach.
 - With `name`: resume `<repo>/.worktrees/<name>`. Attach.
 
-### `wt -r <path> [name]`
+### `wt -r <path>`
 
-Create or resume a remote worktree.
+Create a new remote worktree.
 
 - `path` identifies the repo as a local-style path
   (e.g., `~/src/acme/api`), translated to the remote
   equivalent.
-- Without `name`: create a new worktree. Attach.
-- With `name`: resume existing worktree. Attach.
+- Creates a new worktree. Attach.
 
 ### Attach
 
