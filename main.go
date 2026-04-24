@@ -234,7 +234,7 @@ func runOpencode(dir string) error {
 	if err := os.Chdir(dir); err != nil {
 		return fmt.Errorf("cannot cd to %s: %w", dir, err)
 	}
-	return runAndClear(exec.Command(binary))
+	return runTUI(exec.Command(binary))
 }
 
 // runOpencodeAttach runs opencode attach as a subprocess, clearing the terminal
@@ -248,13 +248,13 @@ func runOpencodeAttach(serverURL, dir, sessionID string) error {
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)
 	}
-	return runAndClear(exec.Command(binary, args...))
+	return runTUI(exec.Command(binary, args...))
 }
 
-// runAndClear runs a TUI command as a subprocess, letting it own the terminal.
+// runTUI runs a TUI command as a subprocess, letting it own the terminal.
 // Terminal signals are ignored in the parent so the child handles them.
-// After the child exits, the terminal is cleared to remove pre-TUI output.
-func runAndClear(cmd *exec.Cmd) error {
+// The TUI's alternate screen buffer handles cleanup automatically on exit.
+func runTUI(cmd *exec.Cmd) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -263,9 +263,6 @@ func runAndClear(cmd *exec.Cmd) error {
 	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTSTP)
 
 	err := cmd.Run()
-
-	// Clear screen to wipe opencode's startup banner from scrollback.
-	fmt.Print("\033[2J\033[H")
 
 	if err != nil {
 		// Forward the child's exit code.
