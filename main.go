@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
 
@@ -60,8 +61,8 @@ func cmdLocal(args []string) {
 			die("failed to create worktree: %v", err)
 		}
 		fmt.Printf("Created worktree: %s\n", name)
-		fmt.Printf("  resume:\n  wt %s\n", name)
-		if err := execOpencode(wtDir); err != nil {
+		fmt.Printf("wt %s\n", name)
+		if err := runOpencode(wtDir); err != nil {
 			die("%v", err)
 		}
 		return
@@ -74,13 +75,13 @@ func cmdLocal(args []string) {
 		die("worktree %q not found", name)
 	}
 	if !entry.Remote {
-		if err := execOpencode(entry.Dir); err != nil {
+		if err := runOpencode(entry.Dir); err != nil {
 			die("%v", err)
 		}
 	} else {
 		serverURL := opencode.ServerURL()
 		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
-		if err := execOpencodeAttach(serverURL, entry.Dir, sessionID); err != nil {
+		if err := runOpencodeAttach(serverURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
 	}
@@ -119,7 +120,7 @@ func cmdRemote(args []string) {
 			die("failed to create remote worktree: %v", err)
 		}
 		fmt.Printf("Created worktree: %s\n", name)
-		fmt.Printf("  resume:\n  wt %s\n", name)
+		fmt.Printf("wt %s\n", name)
 	} else {
 		name = args[1]
 		wtDir = repo + "/.worktrees/" + name
@@ -128,10 +129,9 @@ func cmdRemote(args []string) {
 		}
 	}
 
-	// Attach: find most recent session, then opencode attach
 	serverURL := opencode.ServerURL()
 	sessionID := opencode.FindLatestSession(serverURL, wtDir)
-	if err := execOpencodeAttach(serverURL, wtDir, sessionID); err != nil {
+	if err := runOpencodeAttach(serverURL, wtDir, sessionID); err != nil {
 		die("%v", err)
 	}
 }
@@ -224,31 +224,55 @@ func die(format string, args ...any) {
 	os.Exit(1)
 }
 
-// execOpencode replaces the current process with opencode in the given directory.
-func execOpencode(dir string) error {
+// runOpencode runs opencode as a subprocess in the given directory, clearing the
+// terminal on exit to remove opencode's startup banner from scrollback.
+func runOpencode(dir string) error {
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
 		return fmt.Errorf("opencode not found in PATH")
 	}
-
 	if err := os.Chdir(dir); err != nil {
 		return fmt.Errorf("cannot cd to %s: %w", dir, err)
 	}
-
-	return syscall.Exec(binary, []string{"opencode"}, os.Environ())
+	return runAndClear(exec.Command(binary))
 }
 
-// execOpencodeAttach replaces the current process with opencode attach.
-func execOpencodeAttach(serverURL, dir, sessionID string) error {
+// runOpencodeAttach runs opencode attach as a subprocess, clearing the terminal
+// on exit to remove opencode's startup banner from scrollback.
+func runOpencodeAttach(serverURL, dir, sessionID string) error {
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
 		return fmt.Errorf("opencode not found in PATH")
 	}
-
-	args := []string{"opencode", "attach", serverURL, "--dir", dir}
+	args := []string{"attach", serverURL, "--dir", dir}
 	if sessionID != "" {
 		args = append(args, "--session", sessionID)
 	}
+	return runAndClear(exec.Command(binary, args...))
+}
 
-	return syscall.Exec(binary, args, os.Environ())
+// runAndClear runs a TUI command as a subprocess, letting it own the terminal.
+// Terminal signals are ignored in the parent so the child handles them.
+// After the child exits, the terminal is cleared to remove pre-TUI output.
+func runAndClear(cmd *exec.Cmd) error {
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Let the child handle all terminal signals; parent just waits.
+	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTSTP)
+
+	err := cmd.Run()
+
+	// Clear screen to wipe opencode's startup banner from scrollback.
+	fmt.Print("\033[2J\033[H")
+
+	if err != nil {
+		// Forward the child's exit code.
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return err
+	}
+	return nil
 }
