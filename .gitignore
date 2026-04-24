@@ -1,0 +1,13 @@
+# Build output
+/wt
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Agent state
+.opencode/
+.worktrees/
