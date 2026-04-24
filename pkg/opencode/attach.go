@@ -6,9 +6,8 @@ import (
 )
 
 // AttachedDirs returns a map of worktree directories to the number of
-// opencode attach processes connected to them. Detection is based on
-// local process scanning (ps), so it only sees clients running on
-// this machine.
+// opencode TUI clients connected to them. Detection is based on scanning
+// local "opencode attach --dir <path>" processes.
 func AttachedDirs() map[string]int {
 	out, err := exec.Command("ps", "-eo", "args").Output()
 	if err != nil {

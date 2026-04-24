@@ -25,8 +25,7 @@ type messageResponse struct {
 			Completed *int64 `json:"completed,omitempty"`
 		} `json:"time,omitempty"`
 		Tokens *struct {
-			Input  int `json:"input"`
-			Output int `json:"output"`
+			Total int `json:"total"`
 		} `json:"tokens,omitempty"`
 	} `json:"info"`
 }
@@ -144,8 +143,8 @@ func fetchSessions(serverURL, directory string) []session {
 	return sessions
 }
 
-// fetchMetricsConcurrently fetches message data for each session, sums tokens,
-// and derives working/idle status.
+// fetchMetricsConcurrently fetches message data for each session concurrently,
+// deriving token counts and working/idle status.
 func fetchMetricsConcurrently(serverURL string, sessionIDs []string) map[string]sessionMetrics {
 	result := make(map[string]sessionMetrics)
 	var mu sync.Mutex
@@ -166,9 +165,10 @@ func fetchMetricsConcurrently(serverURL string, sessionIDs []string) map[string]
 	return result
 }
 
-// fetchSessionMetrics calls GET /session/:id/message and computes tokens
-// and status. A session is "working" if the last assistant message has no
-// completion time (the agent is still streaming).
+// fetchSessionMetrics calls GET /session/:id/message to get the context
+// window size (total tokens from the last assistant message) and status.
+// A session is "working" if the last assistant message has no completion
+// time (the agent is still streaming).
 func fetchSessionMetrics(serverURL, sessionID string) sessionMetrics {
 	resp, err := httpGet(serverURL + "/session/" + sessionID + "/message")
 	if err != nil {
@@ -181,26 +181,42 @@ func fetchSessionMetrics(serverURL, sessionID string) sessionMetrics {
 		return sessionMetrics{status: "idle"}
 	}
 
-	tokens := 0
-	for _, m := range messages {
-		if m.Info.Role == "assistant" && m.Info.Tokens != nil {
-			tokens += m.Info.Tokens.Input + m.Info.Tokens.Output
-		}
-	}
+	return computeMetrics(messages)
+}
 
-	// Derive status and last activity from the last assistant message.
-	// If the agent is streaming (no completion time), activity is now.
-	// If idle, activity is when the last message completed.
+// computeMetrics derives token count, status, and last activity from a list
+// of messages. Walks backwards through assistant messages:
+//   - Status comes from the last assistant message (streaming = working).
+//   - Tokens come from the last message with a non-zero total. A streaming
+//     message reports total=0 until completion, so we fall back to the
+//     previous completed message.
+func computeMetrics(messages []messageResponse) sessionMetrics {
+	tokens := 0
 	status := "idle"
+	statusSet := false
 	var lastActivity time.Time
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Info.Role == "assistant" && messages[i].Info.Time != nil {
-			if messages[i].Info.Time.Completed == nil {
-				status = "working"
-				lastActivity = time.Now()
-			} else {
-				lastActivity = time.UnixMilli(*messages[i].Info.Time.Completed)
+		if messages[i].Info.Role != "assistant" {
+			continue
+		}
+		// Status: only set once (from the very last assistant message).
+		if !statusSet {
+			statusSet = true
+			if messages[i].Info.Time != nil {
+				if messages[i].Info.Time.Completed == nil {
+					status = "working"
+					lastActivity = time.Now()
+				} else {
+					lastActivity = time.UnixMilli(*messages[i].Info.Time.Completed)
+				}
 			}
+		}
+		// Tokens: take the first non-zero total we find.
+		if tokens == 0 && messages[i].Info.Tokens != nil && messages[i].Info.Tokens.Total > 0 {
+			tokens = messages[i].Info.Tokens.Total
+		}
+		// Stop once we have both.
+		if tokens > 0 && statusSet {
 			break
 		}
 	}
