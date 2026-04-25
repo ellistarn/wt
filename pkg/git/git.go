@@ -108,21 +108,42 @@ func UniqueCommitCount(host, repo, branch string) int {
 	return n
 }
 
-// IsMerged returns true if the branch was pushed to origin and its tip is now
-// an ancestor of origin/<default>. A branch that was never pushed cannot be
+// IsMerged returns true if the branch was pushed to origin and its changes are
+// incorporated into origin/<default>. A branch that was never pushed cannot be
 // "merged" — it's either fresh or was only worked on locally.
 //
-// This catches regular merges and fast-forward merges (GitFarm). Squash merges
-// produce a new commit hash on main, so the branch tip is not an ancestor —
-// those are not detected and rely on the stale gate or targeted removal.
+// Detection is two-phase:
+//  1. Ancestry check — catches regular merges and fast-forward merges.
+//  2. Merge-tree simulation — catches squash merges. Simulates merging the
+//     branch into origin/<default> and checks whether the result tree is
+//     identical to origin/<default>'s tree (i.e., the branch adds nothing new).
+//     Requires git 2.38+.
 func IsMerged(host, repo, branch string) bool {
 	// A branch that was never pushed can't be "merged."
 	if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
 		return false
 	}
 	def := DefaultBranch(host, repo)
-	_, err := runGit(host, repo, "merge-base", "--is-ancestor", branch, "origin/"+def)
-	return err == nil
+	target := "origin/" + def
+
+	// Fast path: ancestry check (regular merge / fast-forward).
+	if _, err := runGit(host, repo, "merge-base", "--is-ancestor", branch, target); err == nil {
+		return true
+	}
+
+	// Slow path: merge-tree simulation (squash merge).
+	// Simulate merging the branch into the target. If the resulting tree
+	// equals the target's current tree, the branch's diff is a no-op —
+	// its changes are already in the target regardless of commit history.
+	mergeTree, err := runGit(host, repo, "merge-tree", "--write-tree", target, branch)
+	if err != nil {
+		return false // conflict or git too old — not merged
+	}
+	targetTree, err := runGit(host, repo, "rev-parse", target+"^{tree}")
+	if err != nil {
+		return false
+	}
+	return mergeTree == targetTree
 }
 
 // IsClean returns true if the worktree has no modified, staged, or untracked files.

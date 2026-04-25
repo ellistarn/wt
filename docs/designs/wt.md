@@ -165,14 +165,16 @@ the default branch). Classification:
 | Action | Label | Meaning |
 |--------|-------|---------|
 | remove | `empty` | No session was ever created |
-| remove | `merged` | Branch tip is ancestor of `origin/<default>` |
+| remove | `merged` | Changes incorporated into `origin/<default>` (regular, fast-forward, or squash merge) |
 | remove | `stale` | Session inactive >12 hours, no unique commits |
 | keep | `dirty` | Uncommitted changes in working tree |
 | keep | `committed` | Unique commits not merged into default branch |
 | keep | `active` | Session exists, not stale, no unique commits |
 
-Squash merges cannot be detected because the commit hash changes. These
-worktrees are removed when stale or by targeted `wt rm <name>`.
+Squash merges are detected using `git merge-tree --write-tree` (requires git
+2.38+): if simulating a merge of the branch into `origin/<default>` produces a
+tree identical to the target's current tree, the branch's changes are already
+incorporated.
 
 - `--dry-run`: preview classification without removing.
 

@@ -125,6 +125,15 @@ func (e *testEnv) mergeToMain(branch string) {
 	gitCmd(e.t, e.repo, "fetch", "origin")
 }
 
+func (e *testEnv) squashMergeToMain(branch string) {
+	e.t.Helper()
+	gitCmd(e.t, e.repo, "checkout", "main")
+	gitCmd(e.t, e.repo, "merge", "--squash", branch)
+	gitCmd(e.t, e.repo, "commit", "-m", "squash merge "+branch)
+	gitCmd(e.t, e.repo, "push", "origin", "main")
+	gitCmd(e.t, e.repo, "fetch", "origin")
+}
+
 func (e *testEnv) createSession(dir string) {
 	e.t.Helper()
 	now := time.Now().UnixMilli()
@@ -334,6 +343,14 @@ func TestBatchRm_DryRun(t *testing.T) {
 	env.mergeToMain("batch-merged")
 	gitCmd(t, env.repo, "checkout", "main")
 
+	// Would remove: squash-merged (with session, so classified as "merged" not "empty")
+	wt5 := env.addWorktree("batch-squashed")
+	env.commitFile(wt5, "g.txt", "squashed", "squash feature")
+	env.push("batch-squashed")
+	env.createSession(wt5)
+	env.squashMergeToMain("batch-squashed")
+	gitCmd(t, env.repo, "checkout", "main")
+
 	// Skipped: dirty
 	wt3 := env.addWorktree("batch-dirty")
 	os.WriteFile(filepath.Join(wt3, "f.txt"), []byte("x"), 0644)
@@ -347,7 +364,15 @@ func TestBatchRm_DryRun(t *testing.T) {
 
 	assertContains(t, out, "batch-clean")
 	assertContains(t, out, "batch-merged")
+	assertContains(t, out, "batch-squashed")
 	assertContains(t, out, "remove (")
+
+	// Squash-merged branch has a session and unique commits, but merge-tree
+	// detection recognizes its changes are in main — classified as "merged".
+	// Without squash detection it would be "keep (committed)".
+	if !strings.Contains(out, "batch-squashed") || !strings.Contains(out, "remove (merged)") {
+		t.Error("squash-merged worktree should be classified as remove (merged)")
+	}
 
 	assertContains(t, out, "batch-dirty")
 	assertContains(t, out, "keep (dirty")
@@ -355,7 +380,7 @@ func TestBatchRm_DryRun(t *testing.T) {
 	assertContains(t, out, "keep (committed")
 
 	// Nothing actually removed
-	for _, name := range []string{"batch-clean", "batch-merged", "batch-dirty", "batch-unpushed"} {
+	for _, name := range []string{"batch-clean", "batch-merged", "batch-squashed", "batch-dirty", "batch-unpushed"} {
 		if !env.worktreeExists(name) {
 			t.Errorf("worktree %q removed during dry-run", name)
 		}
