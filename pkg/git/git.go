@@ -108,9 +108,8 @@ func UniqueCommitCount(host, repo, branch string) int {
 	return n
 }
 
-// IsMerged returns true if the branch was pushed to origin and its changes are
-// incorporated into origin/<default>. A branch that was never pushed cannot be
-// "merged" — it's either fresh or was only worked on locally.
+// IsMerged returns true if the branch's changes are incorporated into
+// origin/<default> (regular merge, fast-forward, or squash merge).
 //
 // Detection is two-phase:
 //  1. Ancestry check — catches regular merges and fast-forward merges.
@@ -118,11 +117,11 @@ func UniqueCommitCount(host, repo, branch string) int {
 //     branch into origin/<default> and checks whether the result tree is
 //     identical to origin/<default>'s tree (i.e., the branch adds nothing new).
 //     Requires git 2.38+.
+//
+// Callers should only invoke this when the branch has unique commits
+// (UniqueCommitCount > 0). A branch with no divergence trivially matches
+// the target tree and would produce a false positive.
 func IsMerged(host, repo, branch string) bool {
-	// A branch that was never pushed can't be "merged."
-	if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
-		return false
-	}
 	def := DefaultBranch(host, repo)
 	target := "origin/" + def
 
@@ -132,9 +131,6 @@ func IsMerged(host, repo, branch string) bool {
 	}
 
 	// Slow path: merge-tree simulation (squash merge).
-	// Simulate merging the branch into the target. If the resulting tree
-	// equals the target's current tree, the branch's diff is a no-op —
-	// its changes are already in the target regardless of commit history.
 	mergeTree, err := runGit(host, repo, "merge-tree", "--write-tree", target, branch)
 	if err != nil {
 		return false // conflict or git too old — not merged
@@ -152,25 +148,7 @@ func IsClean(host, dir string) bool {
 	return err == nil && out == ""
 }
 
-// IsPushed returns true if the branch has a remote tracking ref on origin and
-// the local branch is not ahead of it.
-func IsPushed(host, repo, branch string) bool {
-	// Check that the remote tracking ref exists
-	if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
-		return false
-	}
-	// Check local is not ahead
-	out, err := runGit(host, repo, "rev-list", "--count", "origin/"+branch+".."+branch)
-	if err != nil {
-		return false
-	}
-	n, _ := strconv.Atoi(out)
-	return n == 0
-}
-
-// Fetch updates remote tracking refs for a repo. Does not prune — keeping
-// refs for deleted remote branches is needed for merge detection (IsMerged
-// checks whether origin/<branch> exists as a signal the branch was pushed).
+// Fetch updates remote tracking refs for a repo.
 func Fetch(host, repo string) {
 	runGit(host, repo, "fetch", "origin")
 }
