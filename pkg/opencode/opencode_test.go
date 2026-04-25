@@ -1,6 +1,9 @@
 package opencode
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -80,5 +83,77 @@ func TestParseAttachDir(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.wantDir)
 			}
 		})
+	}
+}
+
+// TestFetchSessionTokens_RegressionContextWindow verifies that fetchSessionTokens
+// returns the last assistant message's total (context window size), not the sum
+// across all messages. Summing double-counts input context that is re-sent each turn.
+func TestFetchSessionTokens_RegressionContextWindow(t *testing.T) {
+	messages := []message{
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "user"}},
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "assistant", Tokens: struct {
+			Total int `json:"total"`
+		}{Total: 25000}}},
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "user"}},
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "assistant", Tokens: struct {
+			Total int `json:"total"`
+		}{Total: 50000}}},
+		// Trailing zero-total message (incomplete/streaming).
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "assistant", Tokens: struct {
+			Total int `json:"total"`
+		}{Total: 0}}},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(messages)
+	}))
+	defer srv.Close()
+
+	got := fetchSessionTokens(srv.URL, "test-session")
+
+	// Must return 50000 (last non-zero assistant total), not 75000 (sum).
+	if got != 50000 {
+		t.Errorf("fetchSessionTokens = %d, want 50000 (context window size, not sum)", got)
 	}
 }

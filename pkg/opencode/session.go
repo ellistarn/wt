@@ -143,9 +143,10 @@ func listSessions(serverURL, directory string) []Session {
 	return sessions
 }
 
-// fetchSessionTokens returns the total tokens used across all assistant messages
-// in a session. Also returns whether the session is actively streaming (last
-// assistant message has no completion time).
+// fetchSessionTokens returns the context window size for the session — the
+// total tokens from the last assistant message. Each message's Total field
+// represents the full context for that API call (input + output + cache), so
+// the last message gives the current context window usage.
 func fetchSessionTokens(serverURL, sessionID string) int {
 	resp, err := httpGet(serverURL + "/session/" + sessionID + "/message")
 	if err != nil {
@@ -158,13 +159,13 @@ func fetchSessionTokens(serverURL, sessionID string) int {
 		return 0
 	}
 
-	var total int
-	for _, m := range messages {
-		if m.Info.Role == "assistant" {
-			total += m.Info.Tokens.Total
+	// Walk backwards to find the last assistant message with a non-zero total.
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Info.Role == "assistant" && messages[i].Info.Tokens.Total > 0 {
+			return messages[i].Info.Tokens.Total
 		}
 	}
-	return total
+	return 0
 }
 
 func httpGet(u string) (*http.Response, error) {
