@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"time"
 
@@ -38,14 +37,13 @@ type message struct {
 
 // LocalServerURL returns the local OpenCode server URL.
 func LocalServerURL() string {
-	if u := os.Getenv("WT_LOCAL_SERVER"); u != "" {
-		return u
-	}
-	return "http://localhost:4096"
+	return fmt.Sprintf("http://localhost:%d", ServerPort())
 }
 
-// RemoteServerURL is the remote OpenCode server, always reached through the SSH tunnel.
-const RemoteServerURL = "http://localhost:4097"
+// RemoteServerURL returns the remote OpenCode server URL (through the SSH tunnel).
+func RemoteServerURL() string {
+	return fmt.Sprintf("http://localhost:%d", TunnelPort())
+}
 
 // CheckHealth verifies that the OpenCode server is reachable.
 func CheckHealth(serverURL string) error {
