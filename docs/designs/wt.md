@@ -178,7 +178,8 @@ incorporated.
 
 - `--dry-run`: preview classification without removing.
 
-Batch rm fetches from origin before classifying. Removal deletes the worktree
+All read paths (ls, rm) fetch from origin to ensure remote-tracking refs are
+current. Removal deletes the worktree
 directory and the branch. Session history in the database is not touched.
 
 ### `wt ls`

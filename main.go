@@ -289,7 +289,7 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 		remoteCh <- remoteResult{}
 	}
 
-	// Discover in parallel, then enrich via server API.
+	// Discover in parallel, then fetch and enrich.
 	local := <-localCh
 	rr := <-remoteCh
 	if rr.err != nil {
@@ -299,11 +299,19 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
 	}
 
+	all := append(local, rr.entries...)
+	fetchRepos(all)
+
+	// Enrich using sub-slices of all so in-place mutations are visible
+	// in the returned slice.
+	localEntries := all[:len(local)]
+	remoteEntries := all[len(local):]
+
 	var enrichErr error
 	if !remoteOnly {
 		if err := opencode.EnsureLocalServer(); err != nil {
 			enrichErr = fmt.Errorf("local server: %w", err)
-		} else if err := opencode.Enrich(opencode.LocalServerURL(), local); err != nil {
+		} else if err := opencode.Enrich(opencode.LocalServerURL(), localEntries); err != nil {
 			enrichErr = fmt.Errorf("local session query: %w", err)
 		}
 	}
@@ -312,12 +320,12 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 			enrichErr = fmt.Errorf("SSH tunnel: %w", err)
 		} else if err := opencode.EnsureRemoteServer(host); err != nil {
 			enrichErr = fmt.Errorf("remote server: %w", err)
-		} else if err := opencode.Enrich(opencode.RemoteServerURL(), rr.entries); err != nil {
+		} else if err := opencode.Enrich(opencode.RemoteServerURL(), remoteEntries); err != nil {
 			enrichErr = fmt.Errorf("remote session query: %w", err)
 		}
 	}
 
-	return append(local, rr.entries...), enrichErr
+	return all, enrichErr
 }
 
 // hostFor returns the SSH host for an entry, or "" for local entries.
@@ -328,8 +336,8 @@ func hostFor(e worktree.Entry) string {
 	return ""
 }
 
-// fetchRepos runs git fetch once per unique repo to ensure remote refs are
-// current for safety checks. Best-effort — fetch failures are ignored.
+// fetchRepos runs git fetch once per unique repo to ensure remote-tracking
+// refs are current. Best-effort — fetch failures are ignored.
 func fetchRepos(entries []worktree.Entry) {
 	type key struct{ host, repo string }
 	seen := make(map[key]bool)
@@ -384,7 +392,6 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
 	}
-	fetchRepos(all)
 
 	if len(all) == 0 {
 		fmt.Println("No worktrees found.")
