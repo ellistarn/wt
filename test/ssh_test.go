@@ -199,9 +199,9 @@ func TestSSH_RemoteSessionQuery(t *testing.T) {
 		}
 	}
 
-	// wt rm should skip it (active session, default 12h stale threshold)
+	// wt rm should skip it (session exists, default 12h stale threshold)
 	out = env.wt("-r", "rm", "--dry-run")
 	t.Log("SSH rm dry-run output:\n" + out)
 	assertContains(t, out, "ssh-session")
-	assertContains(t, out, "session active")
+	assertContains(t, out, "keep (")
 }

@@ -42,7 +42,7 @@ func PrintTable(rows []Row) {
 	w.Flush()
 }
 
-// FormatStatus returns the highest-priority session state: attached > working > idle > -.
+// FormatStatus returns the highest-priority session state: attached > working > idle > stale > -.
 func FormatStatus(status string, attached bool) string {
 	if status == "" {
 		return "-"

@@ -28,8 +28,10 @@ and full message history. A worktree can have multiple sessions; the most recent
 is attached by default. Session lifecycle (creating new sessions, forking) is
 managed from within OpenCode, not by this tool.
 
-A session is **working** when the agent is actively generating a response, and
-**idle** otherwise. A worktree with no session has no status.
+A session is **working** when the agent is actively generating a response,
+**idle** when the session exists but is not generating, and **stale** when the
+session has been idle for more than 12 hours. A worktree with no session has no
+status.
 
 An **OpenCode server** is a persistent process running `opencode serve`. One
 server hosts all worktrees across all repos. Every API endpoint accepts a
@@ -169,7 +171,7 @@ the default branch). Classification:
 | remove | `stale` | Session inactive >12 hours, no unique commits |
 | keep | `dirty` | Uncommitted changes in working tree |
 | keep | `committed` | Unique commits not merged into default branch |
-| keep | `active` | Session exists, not stale, no unique commits |
+| keep | `idle`/`working` | Session exists, not stale, no unique commits |
 
 Squash merges are detected using `git merge-tree --write-tree` (requires git
 2.38+): if simulating a merge of the branch into `origin/<default>` produces a
@@ -211,7 +213,7 @@ Columns:
 |--------|-------|
 | WORKTREE | Worktree directory name (the stable identifier even if the branch is renamed). |
 | TITLE | Session title, auto-generated from the first prompt. |
-| STATUS | Highest-priority state: `attached` (TUI client connected), `working` (agent generating, no client), `idle` (session exists, no activity). Attachment is detected by scanning local `opencode attach` processes. No session shows `-`. |
+| STATUS | Highest-priority state: `attached` (TUI client connected), `working` (agent generating, no client), `idle` (session exists, no activity), `stale` (session idle >12 hours). Attachment is detected by scanning local `opencode attach` processes. No session shows `-`. |
 | ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). |
 | TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. |
 | REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |

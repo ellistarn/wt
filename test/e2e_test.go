@@ -399,9 +399,9 @@ func TestBatchRm_SessionActiveSkipped(t *testing.T) {
 	out := env.wt("rm", "--dry-run")
 	t.Log("output:\n" + out)
 
-	// Session is recent with no commits — kept as active
+	// Session is recent with no commits — kept as working
 	assertContains(t, out, "batch-active")
-	assertContains(t, out, "keep (active)")
+	assertContains(t, out, "keep (working)")
 }
 
 // --- Remote host configuration tests ---
