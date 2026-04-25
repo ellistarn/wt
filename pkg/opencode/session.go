@@ -112,7 +112,7 @@ func Enrich(serverURL string, entries []worktree.Entry) error {
 	// Detect locally attached TUI clients.
 	attached := AttachedDirs()
 	for i := range entries {
-		if count, ok := attached[entries[i].Dir]; ok && count > 0 {
+		if attached[entries[i].Dir] {
 			entries[i].Attached = true
 		}
 	}

@@ -5,29 +5,19 @@ import (
 	"strings"
 )
 
-// AttachedDirs returns a map of worktree directories to the number of
-// opencode TUI clients connected to them. Detection is based on scanning
-// local "opencode attach --dir <path>" processes.
-func AttachedDirs() map[string]int {
+// AttachedDirs returns the set of worktree directories that have an
+// opencode TUI client attached, detected by scanning local
+// "opencode attach --dir <path>" processes.
+func AttachedDirs() map[string]bool {
 	out, err := exec.Command("ps", "-eo", "args").Output()
 	if err != nil {
-		return map[string]int{}
+		return map[string]bool{}
 	}
 
-	result := make(map[string]int)
+	result := make(map[string]bool)
 	for _, line := range strings.Split(string(out), "\n") {
-		dir := parseAttachDir(line)
-		if dir != "" {
-			result[dir]++
-		}
-	}
-
-	// Each attach shows up twice in ps (node wrapper + binary).
-	// Normalize to actual client count.
-	for dir := range result {
-		result[dir] = result[dir] / 2
-		if result[dir] == 0 {
-			result[dir] = 1
+		if dir := parseAttachDir(line); dir != "" {
+			result[dir] = true
 		}
 	}
 	return result

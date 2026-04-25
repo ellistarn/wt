@@ -196,7 +196,7 @@ func (e *testEnv) wt(args ...string) string {
 		"WT_OPENCODE_PORT="+e.mockPort,
 	)
 	out, err := cmd.CombinedOutput()
-	if err != nil && !strings.Contains(string(out), "cannot remove") {
+	if err != nil {
 		e.t.Logf("wt %v: %v\n%s", args, err, out)
 	}
 	return string(out)
@@ -227,9 +227,9 @@ func assertContains(t *testing.T, output, substring string) {
 	}
 }
 
-// --- Data safety tests ---
+// --- Targeted rm tests (always removes) ---
 
-func TestTargetedRm_DirtyBlocked(t *testing.T) {
+func TestTargetedRm_Dirty(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -239,14 +239,13 @@ func TestTargetedRm_DirtyBlocked(t *testing.T) {
 	os.WriteFile(filepath.Join(wt, "f.txt"), []byte("x"), 0644)
 
 	out := env.wt("rm", "dirty")
-	assertContains(t, out, "cannot remove")
-	assertContains(t, out, "uncommitted changes")
-	if !env.worktreeExists("dirty") {
-		t.Error("dirty worktree should NOT have been removed")
+	assertContains(t, out, "removed")
+	if env.worktreeExists("dirty") {
+		t.Error("targeted rm should remove dirty worktree")
 	}
 }
 
-func TestTargetedRm_UnpushedBlocked(t *testing.T) {
+func TestTargetedRm_Unmerged(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -256,45 +255,9 @@ func TestTargetedRm_UnpushedBlocked(t *testing.T) {
 	env.commitFile(wt, "a.txt", "a", "local work")
 
 	out := env.wt("rm", "unpushed")
-	assertContains(t, out, "cannot remove")
-	assertContains(t, out, "unpushed commit")
-	if !env.worktreeExists("unpushed") {
-		t.Error("unpushed worktree should NOT have been removed")
-	}
-}
-
-func TestTargetedRm_AgentWorkingBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-	wt := env.addWorktree("working")
-	// A just-created session is "working" (assistant message < 60s old)
-	env.createSession(wt)
-
-	out := env.wt("rm", "working")
-	assertContains(t, out, "cannot remove")
-	assertContains(t, out, "agent is working")
-	if !env.worktreeExists("working") {
-		t.Error("worktree with working agent should NOT have been removed")
-	}
-}
-
-func TestTargetedRm_ForceOverrides(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-	wt := env.addWorktree("force")
-	os.WriteFile(filepath.Join(wt, "f.txt"), []byte("x"), 0644)
-
-	out := env.wt("rm", "force", "--force")
-	assertContains(t, out, "force")
-	assertContains(t, out, "removed (forced)")
-	if env.worktreeExists("force") {
-		t.Error("worktree should have been removed with --force")
+	assertContains(t, out, "removed")
+	if env.worktreeExists("unpushed") {
+		t.Error("targeted rm should remove unmerged worktree")
 	}
 }
 
@@ -310,7 +273,7 @@ func TestTargetedRm_CleanNoSession(t *testing.T) {
 
 	out := env.wt("rm", "clean")
 	assertContains(t, out, "clean")
-	assertContains(t, out, "removed (")
+	assertContains(t, out, "removed")
 	if env.worktreeExists("clean") {
 		t.Error("clean no-session worktree should have been removed")
 	}
@@ -329,13 +292,13 @@ func TestTargetedRm_MergedBranch(t *testing.T) {
 
 	out := env.wt("rm", "merged")
 	assertContains(t, out, "merged")
-	assertContains(t, out, "removed (")
+	assertContains(t, out, "removed")
 	if env.worktreeExists("merged") {
 		t.Error("merged worktree should have been removed")
 	}
 }
 
-func TestTargetedRm_PushedNotMergedWarns(t *testing.T) {
+func TestTargetedRm_PushedUnmerged(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -344,14 +307,11 @@ func TestTargetedRm_PushedNotMergedWarns(t *testing.T) {
 	wt := env.addWorktree("in-review")
 	env.commitFile(wt, "f.txt", "wip", "work")
 	env.push("in-review")
-	// No session → "no session" gate fires, no warning expected
-	// (workflow warning only appears when a session blocks the gate)
 
 	out := env.wt("rm", "in-review")
-	assertContains(t, out, "in-review")
-	assertContains(t, out, "removed (")
+	assertContains(t, out, "removed")
 	if env.worktreeExists("in-review") {
-		t.Error("pushed worktree should have been removed in targeted mode")
+		t.Error("targeted rm should remove pushed unmerged worktree")
 	}
 }
 
@@ -392,7 +352,7 @@ func TestBatchRm_DryRun(t *testing.T) {
 	assertContains(t, out, "batch-dirty")
 	assertContains(t, out, "keep (dirty")
 	assertContains(t, out, "batch-unpushed")
-	assertContains(t, out, "keep (unpushed")
+	assertContains(t, out, "keep (committed")
 
 	// Nothing actually removed
 	for _, name := range []string{"batch-clean", "batch-merged", "batch-dirty", "batch-unpushed"} {
@@ -402,21 +362,21 @@ func TestBatchRm_DryRun(t *testing.T) {
 	}
 }
 
-func TestBatchRm_SessionWorkingSkipped(t *testing.T) {
+func TestBatchRm_SessionActiveSkipped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
 	t.Parallel()
 	env := newTestEnv(t)
-	wt := env.addWorktree("batch-working")
+	wt := env.addWorktree("batch-active")
 	env.createSession(wt)
 
 	out := env.wt("rm", "--dry-run")
 	t.Log("output:\n" + out)
 
-	// Just-created session is "working" (< 60s) — data gate blocks
-	assertContains(t, out, "batch-working")
-	assertContains(t, out, "keep (working)")
+	// Session is recent with no commits — kept as active
+	assertContains(t, out, "batch-active")
+	assertContains(t, out, "keep (active)")
 }
 
 // --- Remote host configuration tests ---

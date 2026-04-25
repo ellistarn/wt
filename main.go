@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -75,7 +74,6 @@ func cmdLocal(args []string) {
 		if err := git.WorktreeAdd("", repo, name); err != nil {
 			die("failed to create worktree: %v", err)
 		}
-		fmt.Printf("wt %s\n", name)
 		if err := attach(serverURL, wtDir, ""); err != nil {
 			die("%v", err)
 		}
@@ -94,6 +92,14 @@ func cmdLocal(args []string) {
 	if !ok {
 		die("worktree %q not found", name)
 	}
+
+	// Pull the repo's default branch to keep it fresh for new worktrees
+	// and merge detection. Best-effort — warn and continue on failure.
+	host := hostFor(entry)
+	if err := git.Pull(host, entry.Repo); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+	}
+
 	if !entry.Remote {
 		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
 		if err := attach(serverURL, entry.Dir, sessionID); err != nil {
@@ -153,8 +159,6 @@ func cmdRemote(args []string) {
 	if err := git.WorktreeAdd(host, repo, name); err != nil {
 		die("failed to create remote worktree: %v", err)
 	}
-	fmt.Printf("wt %s\n", name)
-
 	if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
 		die("%v", err)
 	}
@@ -234,29 +238,15 @@ func cmdLs(remoteOnly bool) {
 	display.PrintTable(rows)
 }
 
-// cmdRm handles: wt rm [name] [--force] [--stale N] [--dry-run]
+// cmdRm handles: wt rm [name] [--dry-run]
 func cmdRm(args []string, remoteOnly bool) {
 	var name string
-	force := false
 	dryRun := false
-	staleHours := 12
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--force":
-			force = true
 		case "--dry-run":
 			dryRun = true
-		case "--stale":
-			if i+1 >= len(args) {
-				die("--stale requires a number of hours")
-			}
-			n, err := strconv.Atoi(args[i+1])
-			if err != nil {
-				die("--stale requires a number of hours")
-			}
-			staleHours = n
-			i++
 		default:
 			if name != "" {
 				die("unexpected argument: %s", args[i])
@@ -266,9 +256,9 @@ func cmdRm(args []string, remoteOnly bool) {
 	}
 
 	if name != "" {
-		cmdRmTargeted(name, remoteOnly, force, dryRun)
+		cmdRmTargeted(name)
 	} else {
-		cmdRmBatch(remoteOnly, time.Duration(staleHours)*time.Hour, dryRun)
+		cmdRmBatch(remoteOnly, dryRun)
 	}
 }
 
@@ -352,84 +342,30 @@ func fetchRepos(entries []worktree.Entry) {
 	}
 }
 
-// checkDataSafety checks the three data safety gates. Returns a list of reasons
-// the worktree is NOT safe to remove. Empty list means data-safe.
-func checkDataSafety(e worktree.Entry) []string {
-	host := hostFor(e)
-	var reasons []string
-
-	if e.Status == "working" {
-		reasons = append(reasons, "agent is working")
-	}
-	if !git.IsClean(host, e.Dir) {
-		reasons = append(reasons, "uncommitted changes")
-	}
-	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	if unique > 0 && !git.IsPushed(host, e.Repo, e.Name) {
-		reasons = append(reasons, fmt.Sprintf("%d unpushed commit(s)", unique))
-	}
-
-	return reasons
-}
-
-// checkWorkflowDone checks whether there's no reason to come back to this
-// worktree. Returns true if at least one workflow gate passes.
-func checkWorkflowDone(e worktree.Entry, staleThreshold time.Duration) bool {
-	host := hostFor(e)
-
-	// No session — worktree was never used
-	if e.SessionID == "" {
-		return true
-	}
-
-	// Branch merged — work has landed
-	if git.IsMerged(host, e.Repo, e.Name) {
-		return true
-	}
-
-	// Session stale + no unique commits — started, never committed, walked away
-	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	if unique == 0 && !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > staleThreshold {
-		return true
-	}
-
-	return false
-}
-
-// workflowSkipReason returns a human-readable reason why the worktree is not
-// considered done. Only called when checkWorkflowDone returns false.
-func workflowSkipReason(e worktree.Entry) string {
-	host := hostFor(e)
-	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	if unique > 0 {
-		return "branch not merged"
-	}
-	return "session active"
-}
+// staleThreshold is the duration after which a session with no unique commits
+// is considered abandoned and safe to remove.
+const staleThreshold = 12 * time.Hour
 
 // classifyForRm determines the action (remove/keep) and reason for a worktree.
-func classifyForRm(e worktree.Entry, staleThreshold time.Duration) (action, reason string) {
+func classifyForRm(e worktree.Entry) (action, reason string) {
 	host := hostFor(e)
 
-	// Data safety gates — accumulate all reasons
+	// Data safety — keep worktrees with at-risk changes
 	var keepReasons []string
-	if e.Status == "working" {
-		keepReasons = append(keepReasons, "working")
-	}
 	if !git.IsClean(host, e.Dir) {
 		keepReasons = append(keepReasons, "dirty")
 	}
 	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	if unique > 0 && !git.IsPushed(host, e.Repo, e.Name) {
-		keepReasons = append(keepReasons, "unpushed")
+	if unique > 0 && !git.IsMerged(host, e.Repo, e.Name) {
+		keepReasons = append(keepReasons, "committed")
 	}
 	if len(keepReasons) > 0 {
 		return "keep", strings.Join(keepReasons, ", ")
 	}
 
-	// Workflow gates — determine if work is done
+	// Safe to remove — determine why
 	if e.SessionID == "" {
-		return "remove", "unused"
+		return "remove", "empty"
 	}
 	if git.IsMerged(host, e.Repo, e.Name) {
 		return "remove", "merged"
@@ -438,14 +374,11 @@ func classifyForRm(e worktree.Entry, staleThreshold time.Duration) (action, reas
 		return "remove", "stale"
 	}
 
-	// Not done
-	if unique > 0 {
-		return "keep", "review"
-	}
+	// Not done — session active, no commits yet
 	return "keep", "active"
 }
 
-func cmdRmBatch(remoteOnly bool, staleThreshold time.Duration, dryRun bool) {
+func cmdRmBatch(remoteOnly bool, dryRun bool) {
 	all, enrichErr := discoverAll(remoteOnly)
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
@@ -466,7 +399,7 @@ func cmdRmBatch(remoteOnly bool, staleThreshold time.Duration, dryRun bool) {
 	var removeCount int
 
 	for _, e := range all {
-		action, reason := classifyForRm(e, staleThreshold)
+		action, reason := classifyForRm(e)
 
 		// Actually remove if not dry-run
 		if action == "remove" && !dryRun {
@@ -521,69 +454,18 @@ func cmdRmBatch(remoteOnly bool, staleThreshold time.Duration, dryRun bool) {
 	}
 }
 
-func cmdRmTargeted(name string, remoteOnly bool, force bool, dryRun bool) {
-	all, enrichErr := discoverAll(remoteOnly)
-
-	var entry *worktree.Entry
-	for i := range all {
-		if all[i].Name == name {
-			entry = &all[i]
-			break
-		}
-	}
-	if entry == nil {
+func cmdRmTargeted(name string) {
+	entry, ok := findWorktree(name)
+	if !ok {
 		die("worktree %q not found", name)
 	}
-
-	host := hostFor(*entry)
-
-	if force {
-		action := "remove"
-		if !dryRun {
-			if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
-				die("%v", err)
-			}
-			action = "removed"
-		}
-		display.PrintTable([]display.Row{{
-			Entry:  *entry,
-			Status: fmt.Sprintf("%s (forced)", action),
-		}})
-		return
-	}
-
-	if enrichErr != nil {
-		die("cannot determine session status: %v\n\nUse --force to override.", enrichErr)
-	}
-
-	// Fetch to ensure remote refs are current for safety checks
-	git.Fetch(host, entry.Repo)
-
-	// Data safety gates — hard block
-	if reasons := checkDataSafety(*entry); len(reasons) > 0 {
-		fmt.Fprintf(os.Stderr, "wt: cannot remove %s:\n", name)
-		for _, r := range reasons {
-			fmt.Fprintf(os.Stderr, "  - %s\n", r)
-		}
-		fmt.Fprintf(os.Stderr, "\nUse --force to override.\n")
-		os.Exit(1)
-	}
-
-	// Workflow gates — warnings only
-	if !checkWorkflowDone(*entry, 0) {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", workflowSkipReason(*entry))
-	}
-
-	action, reason := classifyForRm(*entry, 0)
-	if !dryRun {
-		if err := git.WorktreeRemove(host, entry.Repo, entry.Name); err != nil {
-			die("%v", err)
-		}
-		action = "removed"
+	host := hostFor(entry)
+	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
+		die("%v", err)
 	}
 	display.PrintTable([]display.Row{{
-		Entry:  *entry,
-		Status: fmt.Sprintf("%s (%s)", action, reason),
+		Entry:  entry,
+		Status: "removed",
 	}})
 }
 
@@ -599,9 +481,7 @@ Usage:
   wt -r ls                  List remote worktrees only
   wt rm                     Remove all safe-to-remove worktrees
   wt rm --dry-run           Preview what would be removed
-  wt rm <name>              Remove a specific worktree (with safety checks)
-  wt rm <name> --force      Remove a specific worktree (skip all checks)
-  wt rm --stale 1           Remove safe worktrees (1-hour stale threshold)
+  wt rm <name>              Remove a specific worktree
 
 Flags:
   -r, --remote              Operate on the remote dev desktop

@@ -28,12 +28,9 @@ func TestAttachedDirs(t *testing.T) {
 
 	// If there are any opencode attach processes running, verify they
 	// have real directory paths.
-	for dir, count := range dirs {
+	for dir := range dirs {
 		if dir == "" {
 			t.Error("empty directory in AttachedDirs result")
-		}
-		if count < 1 {
-			t.Errorf("expected count >= 1 for %s, got %d", dir, count)
 		}
 	}
 }

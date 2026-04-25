@@ -102,7 +102,7 @@ func (e *sshTestEnv) wt(args ...string) string {
 		"XDG_DATA_HOME="+e.dataDir, // remote data dir — wt queries it over SSH
 	)
 	out, err := cmd.CombinedOutput()
-	if err != nil && !strings.Contains(string(out), "cannot remove") {
+	if err != nil {
 		e.t.Logf("wt %v: %v\n%s", args, err, out)
 	}
 	return string(out)
