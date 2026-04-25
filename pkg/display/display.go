@@ -10,15 +10,24 @@ import (
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-// PrintTable prints worktree entries as an aligned table.
-func PrintTable(entries []worktree.Entry) {
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+// Row is a single row in the worktree table. Callers provide the Entry and a
+// pre-formatted Status string (e.g. "working", "remove (stale)").
+type Row struct {
+	Entry  worktree.Entry
+	Status string
+}
 
-	fmt.Fprintf(w, "WORKTREE\tTITLE\tSTATUS\tACTIVITY\tTOKENS\tREPO\tAGE\n")
+// PrintTable prints rows as an aligned table.
+func PrintTable(rows []Row) {
+	if len(rows) == 0 {
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tREPO\tTOKENS\tACTIVITY\tAGE\n")
 
 	now := time.Now()
-	for _, e := range entries {
-		status := formatStatus(e.Status, e.Attached)
+	for _, r := range rows {
+		e := r.Entry
 		activity := formatActivity(e.UpdatedAt, now)
 		tokens := formatTokens(e.Tokens)
 		title := e.Title
@@ -27,14 +36,14 @@ func PrintTable(entries []worktree.Entry) {
 		}
 		repo := formatRepo(e.Repo, e.Remote)
 		age := formatDuration(e.CreatedAt, now)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, title, status, activity, tokens, repo, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, r.Status, title, repo, tokens, activity, age)
 	}
 
 	w.Flush()
 }
 
-// formatStatus returns the highest-priority state: attached > working > idle > -.
-func formatStatus(status string, attached bool) string {
+// FormatStatus returns the highest-priority session state: attached > working > idle > -.
+func FormatStatus(status string, attached bool) string {
 	if status == "" {
 		return "-"
 	}
@@ -108,7 +117,6 @@ func formatRepo(repo string, remote bool) string {
 	}
 	return repo
 }
-
 
 func FormatAge(t time.Time, now time.Time) string {
 	if t.IsZero() {
