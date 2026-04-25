@@ -41,16 +41,11 @@ func LocalServerURL() string {
 	if u := os.Getenv("WT_LOCAL_SERVER"); u != "" {
 		return u
 	}
-	return "http://localhost:4100"
+	return "http://localhost:4096"
 }
 
-// RemoteServerURL returns the remote OpenCode server URL.
-func RemoteServerURL() string {
-	if u := os.Getenv("WT_REMOTE_SERVER"); u != "" {
-		return u
-	}
-	return "http://localhost:4101"
-}
+// RemoteServerURL is the remote OpenCode server, always reached through the SSH tunnel.
+const RemoteServerURL = "http://localhost:4097"
 
 // CheckHealth verifies that the OpenCode server is reachable.
 func CheckHealth(serverURL string) error {

@@ -101,7 +101,14 @@ func cmdLocal(args []string) {
 		}
 		printExitRow(serverURL, entry)
 	} else {
-		remoteURL := opencode.RemoteServerURL()
+		host, err := ssh.Host()
+		if err != nil {
+			die("%v", err)
+		}
+		if err := ssh.EnsureTunnel(host); err != nil {
+			die("%v", err)
+		}
+		remoteURL := opencode.RemoteServerURL
 		sessionID := opencode.FindLatestSession(remoteURL, entry.Dir)
 		if err := attach(remoteURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
@@ -145,7 +152,10 @@ func cmdRemote(args []string) {
 	}
 	fmt.Printf("wt %s\n", name)
 
-	serverURL := opencode.RemoteServerURL()
+	if err := ssh.EnsureTunnel(host); err != nil {
+		die("%v", err)
+	}
+	serverURL := opencode.RemoteServerURL
 	sessionID := opencode.FindLatestSession(serverURL, wtDir)
 	if err := attach(serverURL, wtDir, sessionID); err != nil {
 		die("%v", err)
@@ -298,7 +308,9 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 		enrichErr = fmt.Errorf("local session query: %w", err)
 	}
 	if host != "" && rr.err == nil {
-		if err := opencode.Enrich(opencode.RemoteServerURL(), rr.entries); err != nil {
+		if err := ssh.EnsureTunnel(host); err != nil {
+			enrichErr = fmt.Errorf("SSH tunnel: %w", err)
+		} else if err := opencode.Enrich(opencode.RemoteServerURL, rr.entries); err != nil {
 			enrichErr = fmt.Errorf("remote session query: %w", err)
 		}
 	}
