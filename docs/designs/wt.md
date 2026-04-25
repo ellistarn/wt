@@ -81,7 +81,8 @@ full session state, including any work the agent completed while disconnected.
 
 Create or resume a worktree.
 
-- No args: create a new worktree in the current repo. Attach.
+- No args: pull the current branch from origin to ensure the worktree starts
+  from the latest remote state. Create a new worktree. Attach.
 - With `name`: resume `<repo>/.worktrees/<name>`. Attach.
 
 ### `wt -r <path>`
@@ -91,7 +92,7 @@ Create a new remote worktree.
 - `path` identifies the repo as a local-style path
   (e.g., `~/src/acme/api`), translated to the remote
   equivalent.
-- Creates a new worktree. Attach.
+- Pulls the current branch from origin, then creates a new worktree. Attach.
 
 ### Attach
 
@@ -180,6 +181,8 @@ creates a session on first prompt; subsequent listings show its status and title
 
 ## Assumptions
 
+- The repo root checkout is on the default branch and clean. Worktree creation
+  pulls this branch, so conflicts or uncommitted changes would cause a failure.
 - An SSH tunnel to the dev desktop is established and maintained externally.
 - The OpenCode server runs persistently on both the laptop (daemon) and the dev
   desktop, managed externally.
