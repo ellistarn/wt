@@ -43,13 +43,14 @@ func mustCwd() string {
 }
 
 type testEnv struct {
-	t         *testing.T
-	rootDir   string
-	dataDir   string
-	repo      string
-	mockURL   string
-	sessions  []mockSession
-	sessionMu sync.Mutex
+	t          *testing.T
+	rootDir    string
+	dataDir    string
+	repo       string
+	mockURL    string
+	mockPort   string
+	sessions   []mockSession
+	sessionMu  sync.Mutex
 }
 
 type mockSession struct {
@@ -182,6 +183,8 @@ func (e *testEnv) startMockServer() {
 	go srv.Serve(ln)
 	e.t.Cleanup(func() { srv.Close() })
 	e.mockURL = "http://" + ln.Addr().String()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	e.mockPort = port
 }
 
 func (e *testEnv) wt(args ...string) string {
@@ -190,7 +193,7 @@ func (e *testEnv) wt(args ...string) string {
 	cmd.Dir = e.repo
 	cmd.Env = append(os.Environ(),
 		"WT_REMOTE_HOST=",
-		"WT_LOCAL_SERVER="+e.mockURL,
+		"WT_OPENCODE_PORT="+e.mockPort,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "cannot remove") {

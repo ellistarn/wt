@@ -46,33 +46,35 @@ server with TUI clients attached via `opencode attach`.
 
 ### Local
 
-The OpenCode server runs on the laptop as a daemon (e.g. launchd) on the
-default port (`localhost:4096`). Worktrees and sessions live on the laptop.
+The OpenCode server runs on the laptop on port 5096. `wt` ensures the server is
+running before any operation — if no server is healthy, `wt` starts
+`opencode serve --port 5096` as a detached process. The server outlives the `wt`
+invocation and is reused across commands.
 
 ```
 laptop
-  opencode serve                     # daemon, always running, port 4096
+  opencode serve                     # auto-started by wt, port 5096
        │
-  wt <name> ──> opencode attach http://localhost:4096
+  wt <name> ──> opencode attach http://localhost:5096
                   --dir <repo>/.worktrees/<name>
                   --session <id>
 ```
 
 ### Remote
 
-Both machines run an OpenCode server on the default port (4096). `wt` maintains
-an SSH tunnel on port 4097 forwarding to the remote's 4096. TUI clients run
-locally, attaching through the tunnel.
+Both machines run an OpenCode server on port 5096, each auto-started by `wt` on
+first use. `wt` maintains an SSH tunnel on port 5097 forwarding to the remote's
+5096. TUI clients run locally, attaching through the tunnel.
 
 ```
 laptop                                       dev desktop
   opencode serve                               opencode serve
-  (port 4096)                                  (port 4096)
+  (port 5096)                                  (port 5096)
                                                         ▲
-  ssh -fNL 4097:localhost:4096 ─────────────────────────┘
+  ssh -fNL 5097:localhost:5096 ─────────────────────────┘
        (tunnel, long-lived)
 
-  wt <name> ──> opencode attach http://localhost:4097
+  wt <name> ──> opencode attach http://localhost:5097
                   --dir <remote worktree path>
                   --session <id>
 ```
@@ -83,10 +85,34 @@ full session state, including any work the agent completed while disconnected.
 ### Tunnel
 
 `wt` ensures the SSH tunnel exists before any remote HTTP operation. Health
-check: TCP connect to `localhost:4097`. If down, start
-`ssh -fNL 4097:localhost:4096 <host>`. The tunnel is long-lived (`ssh -f`
+check: TCP connect to `localhost:5097`. If down, start
+`ssh -fNL 5097:localhost:5096 <host>`. The tunnel is long-lived (`ssh -f`
 backgrounds the process), shared across `wt` invocations. If the tunnel dies,
 the next invocation restarts it.
+
+### Server Lifecycle
+
+`wt` ensures an OpenCode server is running before any operation that needs one,
+using the same pattern as the tunnel: health check, start if not healthy, reuse
+across invocations.
+
+Locally, health check `GET /global/health` on `localhost:5096`. If down, start
+`opencode serve --port 5096` as a detached process. Remotely, the same health
+check goes through the tunnel (`localhost:5097`). If down, start the server via
+`ssh <host>`. Both cases poll until healthy or error.
+
+The server outlives the `wt` invocation. Multiple `wt` invocations reuse the
+same server without starting duplicates. If someone manually starts
+`opencode serve --port 5096`, `wt` reuses it. The server dies on reboot or
+crash; the next `wt` invocation restarts it.
+
+Both `wt`-managed and user-started servers share the same data directory
+(~/.opencode or configured). Sessions created on any port are visible to all
+servers — OpenCode servers are stateless API layers over SQLite.
+
+If the server dies mid-agent, the next `wt` command restarts it. OpenCode
+sessions are crash-tolerant — incomplete messages are treated as interrupted
+history, and reattaching resumes the session.
 
 ## CLI
 
@@ -111,10 +137,10 @@ Create a new remote worktree.
 
 All attach operations follow the same steps:
 
-1. Resolve the server URL (local: `http://localhost:4096`, remote:
-   `http://localhost:4097` via the SSH tunnel).
-2. Health check: `GET /global/health`. Fail with a clear message if the server
-   is not running.
+1. Resolve the server URL (local: `http://localhost:5096`, remote:
+   `http://localhost:5097` via the SSH tunnel).
+2. Ensure the server is running (local or tunnel + remote). Fail with a clear
+   message if the server cannot be started.
 3. Query `GET /session` filtered by the worktree directory. Select the most
    recently updated session.
 4. Run `opencode attach <server> --dir <dir> --session <id>`.
@@ -190,7 +216,7 @@ creates a session on first prompt; subsequent listings show its status and title
 ## Reconnection
 
 1. Laptop opens.
-2. `wt ls` shows everything in flight (ensures the tunnel if a remote host is configured).
+2. `wt ls` shows everything in flight (ensures the server and tunnel as needed).
 3. `wt 0423T1430-12847` resumes (works for both local and remote worktrees).
 
 ## Assumptions
@@ -198,14 +224,14 @@ creates a session on first prompt; subsequent listings show its status and title
 - The repo root checkout is on the default branch and clean. Worktree creation
   pulls this branch, so conflicts or uncommitted changes would cause a failure.
 - The remote host is reachable via SSH.
-- The OpenCode server runs persistently on both the laptop (daemon) and the dev
-  desktop, managed externally.
+- `opencode` is available on PATH (locally and on the remote host).
 
 ## Configuration
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `WT_REMOTE_HOST` | For remote operations | — | SSH hostname of the remote dev desktop |
+| `WT_OPENCODE_PORT` | No | `5096` | OpenCode server port (local and remote). Tunnel port is always server port + 1. |
 
 ## Implementation
 
@@ -215,11 +241,10 @@ and for session discovery when attaching.
 
 ## Scoped Out
 
-- OpenCode server lifecycle (daemon setup, launchd plist).
 - Auto-reattach on laptop wake.
 - Session lifecycle (new, fork). Managed from within OpenCode.
 - Multiple remote hosts.
-- Conflict detection when running bare `opencode` alongside the daemon.
+- Conflict detection when running bare `opencode` alongside the managed server.
 
 ## Rejected Alternatives
 
@@ -243,6 +268,12 @@ consistent multi-client behavior.
 
 **SQLite for session metadata** — Querying the OpenCode database directly is a
 layer violation. The HTTP API is the stable contract.
+
+**External server management** — Running `opencode serve` as a systemd unit or
+launchd plist requires manual setup on every machine and creates env-wiring
+problems (systemd does not inherit the user's shell environment — AWS
+credentials, PATH). `wt` starting the server as a detached child inherits the
+user's env and makes the tool self-contained.
 
 **External SSH tunnel** — Couples `wt` to external infrastructure (launchd plist,
 shell aliases). The tunnel is a prerequisite for every remote operation; managing

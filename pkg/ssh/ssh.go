@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// TunnelPort is the local port for the SSH tunnel to the remote OpenCode server.
-const TunnelPort = 4097
-
 // Host returns WT_REMOTE_HOST or an error if unset.
 func Host() (string, error) {
 	host := os.Getenv("WT_REMOTE_HOST")
@@ -72,36 +69,36 @@ func ToRemotePath(localPath, remoteHome string) (string, error) {
 	return remoteHome + localPath[len(home):], nil
 }
 
-// EnsureTunnel ensures an SSH tunnel from localhost:4097 to the remote host's
-// port 4096 is running. If the tunnel is already up, this is a no-op. Otherwise,
-// starts ssh -fNL 4097:localhost:4096 <host> and waits for it to come up.
-// The tunnel is long-lived and shared across wt invocations.
-func EnsureTunnel(host string) error {
-	if tunnelHealthy() {
+// EnsureTunnel ensures an SSH tunnel from localhost:<localPort> to the remote
+// host's <remotePort> is running. If the tunnel is already up, this is a no-op.
+// Otherwise, starts ssh -fNL <localPort>:localhost:<remotePort> <host> and waits
+// for it to come up. The tunnel is long-lived and shared across wt invocations.
+func EnsureTunnel(host string, localPort, remotePort int) error {
+	if tunnelHealthy(localPort) {
 		return nil
 	}
-	cmd := exec.Command("ssh", "-fNL", fmt.Sprintf("%d:localhost:4096", TunnelPort), host)
+	cmd := exec.Command("ssh", "-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Another process may have started the tunnel between our health
 		// check and this SSH invocation (race on "address already in use").
-		if tunnelHealthy() {
+		if tunnelHealthy(localPort) {
 			return nil
 		}
 		return fmt.Errorf("failed to start SSH tunnel to %s: %w: %s", host, err, strings.TrimSpace(string(out)))
 	}
 	// Wait for the tunnel to accept connections.
 	for i := 0; i < 20; i++ {
-		if tunnelHealthy() {
+		if tunnelHealthy(localPort) {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("SSH tunnel started but localhost:%d not reachable", TunnelPort)
+	return fmt.Errorf("SSH tunnel started but localhost:%d not reachable", localPort)
 }
 
-// tunnelHealthy checks whether the tunnel port is accepting TCP connections.
-func tunnelHealthy() bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", TunnelPort), 500*time.Millisecond)
+// tunnelHealthy checks whether the given port is accepting TCP connections.
+func tunnelHealthy(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 500*time.Millisecond)
 	if err != nil {
 		return false
 	}

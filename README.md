@@ -29,3 +29,4 @@ Environment variables:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `WT_REMOTE_HOST` | For `-r` operations | — | SSH hostname of the remote dev desktop |
+| `WT_OPENCODE_PORT` | No | `5096` | OpenCode server port (local and remote) |

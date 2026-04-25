@@ -56,10 +56,10 @@ func main() {
 
 // cmdLocal handles: wt [name]
 func cmdLocal(args []string) {
-	serverURL := opencode.LocalServerURL()
-	if err := opencode.CheckHealth(serverURL); err != nil {
+	if err := opencode.EnsureLocalServer(); err != nil {
 		die("%v", err)
 	}
+	serverURL := opencode.LocalServerURL()
 
 	if len(args) == 0 {
 		// Create new local worktree
@@ -105,10 +105,13 @@ func cmdLocal(args []string) {
 		if err != nil {
 			die("%v", err)
 		}
-		if err := ssh.EnsureTunnel(host); err != nil {
+		if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
 			die("%v", err)
 		}
-		remoteURL := opencode.RemoteServerURL
+		if err := opencode.EnsureRemoteServer(host); err != nil {
+			die("%v", err)
+		}
+		remoteURL := opencode.RemoteServerURL()
 		sessionID := opencode.FindLatestSession(remoteURL, entry.Dir)
 		if err := attach(remoteURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
@@ -152,10 +155,13 @@ func cmdRemote(args []string) {
 	}
 	fmt.Printf("wt %s\n", name)
 
-	if err := ssh.EnsureTunnel(host); err != nil {
+	if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
 		die("%v", err)
 	}
-	serverURL := opencode.RemoteServerURL
+	if err := opencode.EnsureRemoteServer(host); err != nil {
+		die("%v", err)
+	}
+	serverURL := opencode.RemoteServerURL()
 	sessionID := opencode.FindLatestSession(serverURL, wtDir)
 	if err := attach(serverURL, wtDir, sessionID); err != nil {
 		die("%v", err)
@@ -304,13 +310,19 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 	}
 
 	var enrichErr error
-	if err := opencode.Enrich(opencode.LocalServerURL(), local); err != nil {
-		enrichErr = fmt.Errorf("local session query: %w", err)
+	if !remoteOnly {
+		if err := opencode.EnsureLocalServer(); err != nil {
+			enrichErr = fmt.Errorf("local server: %w", err)
+		} else if err := opencode.Enrich(opencode.LocalServerURL(), local); err != nil {
+			enrichErr = fmt.Errorf("local session query: %w", err)
+		}
 	}
 	if host != "" && rr.err == nil {
-		if err := ssh.EnsureTunnel(host); err != nil {
+		if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
 			enrichErr = fmt.Errorf("SSH tunnel: %w", err)
-		} else if err := opencode.Enrich(opencode.RemoteServerURL, rr.entries); err != nil {
+		} else if err := opencode.EnsureRemoteServer(host); err != nil {
+			enrichErr = fmt.Errorf("remote server: %w", err)
+		} else if err := opencode.Enrich(opencode.RemoteServerURL(), rr.entries); err != nil {
 			enrichErr = fmt.Errorf("remote session query: %w", err)
 		}
 	}
