@@ -107,6 +107,32 @@ All attach operations follow the same steps:
 If no session exists for the worktree, `opencode attach` is run without
 `--session`. OpenCode creates a new session on first prompt.
 
+### `wt rm [name] [--force] [--stale N] [--dry-run]`
+
+Remove worktrees that are safe to clean up.
+
+A worktree is safe to remove when there is nothing left to lose and no reason
+to come back.
+
+**Nothing left to lose** — working tree is clean, no unpushed commits, and
+agent is not actively generating.
+
+**No reason to come back** — branch is merged, no session exists, or session
+is stale (inactive longer than `--stale` threshold, default 12 hours) with no
+commits on the branch. Squash merges cannot be safely detected because the
+commit hash has changed. These worktrees are removed when stale or by targeted
+`wt rm <name>`.
+
+- No args: batch mode. Requires both. Print what was removed and skipped.
+- With `name`: targeted mode. Requires nothing left to lose; warns about
+  reason to come back.
+- `--stale N`: override the stale threshold (default 12 hours).
+- `--dry-run`: preview without removing.
+- `--force`: skip all checks.
+
+Fetches from origin before checking. Removal deletes the worktree directory
+and the branch. Session history in the database is not touched.
+
 ### `wt ls`
 
 List all worktrees and their session status. Local worktrees (all repos under
@@ -157,7 +183,6 @@ creates a session on first prompt; subsequent listings show its status and title
 - An SSH tunnel to the dev desktop is established and maintained externally.
 - The OpenCode server runs persistently on both the laptop (daemon) and the dev
   desktop, managed externally.
-- Worktree cleanup is handled externally.
 
 ## Implementation
 
@@ -167,7 +192,6 @@ and for session discovery when attaching.
 
 ## Scoped Out
 
-- Worktree cleanup.
 - OpenCode server lifecycle (daemon setup, launchd plist).
 - SSH tunnel management.
 - Auto-reattach on laptop wake.

@@ -1,84 +1,178 @@
 package opencode
 
 import (
-	"encoding/json"
-	"net/url"
-	"sync"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/ellistarn/wt/pkg/ssh"
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-// sessionMetrics holds token count and derived status from message data.
-type sessionMetrics struct {
-	tokens       int
-	status       string    // "working" or "idle"
-	lastActivity time.Time // when the session was last active
+// sessionRecord holds the raw data from a SQLite query row.
+type sessionRecord struct {
+	id             string
+	dir            string
+	title          string
+	updated        int64
+	lastMsgRole    string
+	lastMsgUpdated int64
 }
 
-// messageResponse is the API response for GET /session/:id/message.
-type messageResponse struct {
-	Info struct {
-		Role   string `json:"role"`
-		Time   *struct {
-			Created   int64  `json:"created"`
-			Completed *int64 `json:"completed,omitempty"`
-		} `json:"time,omitempty"`
-		Tokens *struct {
-			Total int `json:"total"`
-		} `json:"tokens,omitempty"`
-	} `json:"info"`
+func dbPath() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "opencode", "opencode.db")
 }
 
-// Enrich populates worktree entries with session data from an OpenCode server.
-func Enrich(serverURL string, entries []worktree.Entry) {
-	if len(entries) == 0 {
-		return
+const sessionQuery = `
+SELECT s.id, s.directory, s.title, s.time_updated,
+       CASE WHEN m.data LIKE '%%"role":"assistant"%%' THEN 'assistant' ELSE '' END,
+       COALESCE(m.time_updated, 0)
+FROM session s
+LEFT JOIN message m ON m.session_id = s.id
+  AND m.time_created = (SELECT MAX(time_created) FROM message WHERE session_id = s.id)
+WHERE s.directory IN (%s)
+ORDER BY s.time_updated DESC;
+`
+
+func queryLocalSessions(dirs []string) ([]sessionRecord, error) {
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	return queryFromDB("", dbPath(), dirs)
+}
+
+func queryRemoteSessions(host string, dirs []string) ([]sessionRecord, error) {
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	return queryFromDB(host, "$HOME/.local/share/opencode/opencode.db", dirs)
+}
+
+func queryFromDB(host, dbFilePath string, dirs []string) ([]sessionRecord, error) {
+	quoted := make([]string, len(dirs))
+	for i, d := range dirs {
+		quoted[i] = "'" + strings.ReplaceAll(d, "'", "''") + "'"
+	}
+	query := fmt.Sprintf(sessionQuery, strings.Join(quoted, ","))
+
+	var out string
+	var err error
+	if host == "" {
+		// If the DB doesn't exist locally, there are no sessions.
+		if _, statErr := os.Stat(dbFilePath); os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		// Run sqlite3 locally, passing the query via stdin to avoid shell quoting issues.
+		c := exec.Command("sqlite3", "-separator", "\t", dbFilePath)
+		c.Stdin = strings.NewReader(query)
+		b, e := c.Output()
+		out, err = string(b), e
+	} else {
+		// Check if DB exists on remote before querying.
+		if _, checkErr := ssh.Run(host, fmt.Sprintf("test -f %s", dbFilePath)); checkErr != nil {
+			return nil, nil
+		}
+		// Use a heredoc to pass the query, avoiding shell quoting issues
+		// with double quotes in the SQL LIKE clause.
+		cmd := fmt.Sprintf("sqlite3 -separator $'\\t' \"%s\" <<'SQL'\n%s\nSQL", dbFilePath, query)
+		out, err = ssh.Run(host, cmd)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("session query failed: %w", err)
 	}
 
-	// Quick health check — if the server is down, skip enrichment entirely
-	// rather than waiting for N individual HTTP timeouts.
-	if err := checkHealthFast(serverURL); err != nil {
-		return
+	var records []sessionRecord
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) < 6 {
+			continue
+		}
+		var updated, lastMsgUpdated int64
+		fmt.Sscanf(parts[3], "%d", &updated)
+		fmt.Sscanf(parts[5], "%d", &lastMsgUpdated)
+		records = append(records, sessionRecord{
+			id:             parts[0],
+			dir:            parts[1],
+			title:          parts[2],
+			updated:        updated,
+			lastMsgRole:    parts[4],
+			lastMsgUpdated: lastMsgUpdated,
+		})
+	}
+	return records, nil
+}
+
+// EnrichLocal enriches worktree entries with local OpenCode session data.
+func EnrichLocal(entries []worktree.Entry) error {
+	dirs := make([]string, len(entries))
+	for i, e := range entries {
+		dirs[i] = e.Dir
+	}
+	records, err := queryLocalSessions(dirs)
+	if err != nil {
+		return err
+	}
+	enrich(entries, records)
+	return nil
+}
+
+// EnrichRemote enriches worktree entries with remote OpenCode session data.
+func EnrichRemote(host string, entries []worktree.Entry) error {
+	dirs := make([]string, len(entries))
+	for i, e := range entries {
+		dirs[i] = e.Dir
+	}
+	records, err := queryRemoteSessions(host, dirs)
+	if err != nil {
+		return err
+	}
+	enrich(entries, records)
+	return nil
+}
+
+func enrich(entries []worktree.Entry, records []sessionRecord) {
+	byDir := make(map[string]sessionRecord)
+	for _, r := range records {
+		existing, ok := byDir[r.dir]
+		if !ok || r.updated > existing.updated {
+			byDir[r.dir] = r
+		}
 	}
 
-	// Fetch sessions per directory concurrently. The session API is
-	// project-scoped, so an unfiltered GET /session only returns sessions
-	// for the server's own project. The directory parameter crosses
-	// project boundaries.
-	byDir := fetchSessionsByDir(serverURL, entries)
-	if len(byDir) == 0 {
-		return
-	}
-
-	// Match sessions to entries and collect IDs for metric fetching.
-	var sessionIDs []string
-	entrySessionMap := make(map[int]string) // entry index -> session ID
 	for i := range entries {
-		s, ok := byDir[entries[i].Dir]
+		r, ok := byDir[entries[i].Dir]
 		if !ok {
 			continue
 		}
-		entries[i].SessionID = s.ID
-		entries[i].Title = s.Title
-		entries[i].UpdatedAt = time.UnixMilli(s.Time.Updated)
-		sessionIDs = append(sessionIDs, s.ID)
-		entrySessionMap[i] = s.ID
-	}
+		entries[i].SessionID = r.id
+		entries[i].Title = r.title
+		entries[i].UpdatedAt = time.UnixMilli(r.updated)
 
-	// Fetch tokens and derive status from message data concurrently.
-	// Status is derived from whether the last assistant message is still
-	// streaming (no completion time), avoiding the project-scoped
-	// /session/status endpoint.
-	metricsBySession := fetchMetricsConcurrently(serverURL, sessionIDs)
-	for i, sid := range entrySessionMap {
-		if m, ok := metricsBySession[sid]; ok {
-			entries[i].Tokens = m.tokens
-			entries[i].Status = m.status
-			if !m.lastActivity.IsZero() {
-				entries[i].UpdatedAt = m.lastActivity
+		// Derive status from last message role and timing.
+		// If the last message is from the assistant and was recently updated,
+		// it may still be streaming (working). Otherwise idle.
+		if r.lastMsgRole == "assistant" && r.lastMsgUpdated > 0 {
+			msgTime := time.UnixMilli(r.lastMsgUpdated)
+			// If the last assistant message was updated very recently (within 30s),
+			// treat it as potentially still working.
+			if time.Since(msgTime) < 30*time.Second {
+				entries[i].Status = "working"
+			} else {
+				entries[i].Status = "idle"
 			}
-		} else {
+			entries[i].UpdatedAt = msgTime
+		} else if r.id != "" {
 			entries[i].Status = "idle"
 		}
 	}
@@ -90,136 +184,4 @@ func Enrich(serverURL string, entries []worktree.Entry) {
 			entries[i].Attached = true
 		}
 	}
-}
-
-// fetchSessionsByDir queries GET /session?directory=<dir> for each entry
-// concurrently and returns the most recent session per directory.
-func fetchSessionsByDir(serverURL string, entries []worktree.Entry) map[string]session {
-	result := make(map[string]session)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for _, e := range entries {
-		wg.Add(1)
-		go func(dir string) {
-			defer wg.Done()
-			sessions := fetchSessions(serverURL, dir)
-			if len(sessions) == 0 {
-				return
-			}
-			// Pick the most recently updated session for this directory.
-			best := sessions[0]
-			for _, s := range sessions[1:] {
-				if s.Time.Updated > best.Time.Updated {
-					best = s
-				}
-			}
-			mu.Lock()
-			result[dir] = best
-			mu.Unlock()
-		}(e.Dir)
-	}
-
-	wg.Wait()
-	return result
-}
-
-// fetchSessions calls GET /session?directory=<dir> and returns matching sessions.
-func fetchSessions(serverURL, directory string) []session {
-	u := serverURL + "/session"
-	if directory != "" {
-		u += "?directory=" + url.QueryEscape(directory)
-	}
-	resp, err := httpGet(u)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	var sessions []session
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return nil
-	}
-	return sessions
-}
-
-// fetchMetricsConcurrently fetches message data for each session concurrently,
-// deriving token counts and working/idle status.
-func fetchMetricsConcurrently(serverURL string, sessionIDs []string) map[string]sessionMetrics {
-	result := make(map[string]sessionMetrics)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for _, sid := range sessionIDs {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			m := fetchSessionMetrics(serverURL, id)
-			mu.Lock()
-			result[id] = m
-			mu.Unlock()
-		}(sid)
-	}
-
-	wg.Wait()
-	return result
-}
-
-// fetchSessionMetrics calls GET /session/:id/message to get the context
-// window size (total tokens from the last assistant message) and status.
-// A session is "working" if the last assistant message has no completion
-// time (the agent is still streaming).
-func fetchSessionMetrics(serverURL, sessionID string) sessionMetrics {
-	resp, err := httpGet(serverURL + "/session/" + sessionID + "/message")
-	if err != nil {
-		return sessionMetrics{status: "idle"}
-	}
-	defer resp.Body.Close()
-
-	var messages []messageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
-		return sessionMetrics{status: "idle"}
-	}
-
-	return computeMetrics(messages)
-}
-
-// computeMetrics derives token count, status, and last activity from a list
-// of messages. Walks backwards through assistant messages:
-//   - Status comes from the last assistant message (streaming = working).
-//   - Tokens come from the last message with a non-zero total. A streaming
-//     message reports total=0 until completion, so we fall back to the
-//     previous completed message.
-func computeMetrics(messages []messageResponse) sessionMetrics {
-	tokens := 0
-	status := "idle"
-	statusSet := false
-	var lastActivity time.Time
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Info.Role != "assistant" {
-			continue
-		}
-		// Status: only set once (from the very last assistant message).
-		if !statusSet {
-			statusSet = true
-			if messages[i].Info.Time != nil {
-				if messages[i].Info.Time.Completed == nil {
-					status = "working"
-					lastActivity = time.Now()
-				} else {
-					lastActivity = time.UnixMilli(*messages[i].Info.Time.Completed)
-				}
-			}
-		}
-		// Tokens: take the first non-zero total we find.
-		if tokens == 0 && messages[i].Info.Tokens != nil && messages[i].Info.Tokens.Total > 0 {
-			tokens = messages[i].Info.Tokens.Total
-		}
-		// Stop once we have both.
-		if tokens > 0 && statusSet {
-			break
-		}
-	}
-
-	return sessionMetrics{tokens: tokens, status: status, lastActivity: lastActivity}
 }
