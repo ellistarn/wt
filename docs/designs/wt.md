@@ -46,34 +46,47 @@ server with TUI clients attached via `opencode attach`.
 
 ### Local
 
-The OpenCode server runs on the laptop as a daemon (e.g. launchd) at a known
-port (`localhost:4100`). Worktrees and sessions live on the laptop.
+The OpenCode server runs on the laptop as a daemon (e.g. launchd) on the
+default port (`localhost:4096`). Worktrees and sessions live on the laptop.
 
 ```
 laptop
-  opencode serve --port 4100         # daemon, always running
+  opencode serve                     # daemon, always running, port 4096
        │
-  wt <name> ──> opencode attach http://localhost:4100
+  wt <name> ──> opencode attach http://localhost:4096
                   --dir <repo>/.worktrees/<name>
                   --session <id>
 ```
 
 ### Remote
 
-The OpenCode server runs on the dev desktop. TUI clients connect through an SSH
-tunnel.
+Both machines run an OpenCode server on the default port (4096). `wt` maintains
+an SSH tunnel on port 4097 forwarding to the remote's 4096. TUI clients run
+locally, attaching through the tunnel.
 
 ```
-laptop                                  dev desktop
-  wt -r ~/src/acme/api ──SSH──>            git worktree add ...
-                                                │
-  opencode attach ────tunnel────────> opencode serve
-    --dir <remote worktree path>
-    --session <id>
+laptop                                       dev desktop
+  opencode serve                               opencode serve
+  (port 4096)                                  (port 4096)
+                                                        ▲
+  ssh -fNL 4097:localhost:4096 ─────────────────────────┘
+       (tunnel, long-lived)
+
+  wt <name> ──> opencode attach http://localhost:4097
+                  --dir <remote worktree path>
+                  --session <id>
 ```
 
 Sessions survive laptop close. On reattach, the TUI reconnects and loads the
 full session state, including any work the agent completed while disconnected.
+
+### Tunnel
+
+`wt` ensures the SSH tunnel exists before any remote HTTP operation. Health
+check: TCP connect to `localhost:4097`. If down, start
+`ssh -fNL 4097:localhost:4096 <host>`. The tunnel is long-lived (`ssh -f`
+backgrounds the process), shared across `wt` invocations. If the tunnel dies,
+the next invocation restarts it.
 
 ## CLI
 
@@ -98,7 +111,8 @@ Create a new remote worktree.
 
 All attach operations follow the same steps:
 
-1. Resolve the server URL (local: `http://localhost:4100`, remote: `http://localhost:4101`).
+1. Resolve the server URL (local: `http://localhost:4096`, remote:
+   `http://localhost:4097` via the SSH tunnel).
 2. Health check: `GET /global/health`. Fail with a clear message if the server
    is not running.
 3. Query `GET /session` filtered by the worktree directory. Select the most
@@ -175,17 +189,23 @@ creates a session on first prompt; subsequent listings show its status and title
 
 ## Reconnection
 
-1. Laptop opens. SSH tunnel restarts.
-2. `wt ls` shows everything in flight.
+1. Laptop opens.
+2. `wt ls` shows everything in flight (ensures the tunnel if a remote host is configured).
 3. `wt 0423T1430-12847` resumes (works for both local and remote worktrees).
 
 ## Assumptions
 
 - The repo root checkout is on the default branch and clean. Worktree creation
   pulls this branch, so conflicts or uncommitted changes would cause a failure.
-- An SSH tunnel to the dev desktop is established and maintained externally.
+- The remote host is reachable via SSH.
 - The OpenCode server runs persistently on both the laptop (daemon) and the dev
   desktop, managed externally.
+
+## Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `WT_REMOTE_HOST` | For remote operations | — | SSH hostname of the remote dev desktop |
 
 ## Implementation
 
@@ -196,7 +216,6 @@ and for session discovery when attaching.
 ## Scoped Out
 
 - OpenCode server lifecycle (daemon setup, launchd plist).
-- SSH tunnel management.
 - Auto-reattach on laptop wake.
 - Session lifecycle (new, fork). Managed from within OpenCode.
 - Multiple remote hosts.
@@ -224,3 +243,14 @@ consistent multi-client behavior.
 
 **SQLite for session metadata** — Querying the OpenCode database directly is a
 layer violation. The HTTP API is the stable contract.
+
+**External SSH tunnel** — Couples `wt` to external infrastructure (launchd plist,
+shell aliases). The tunnel is a prerequisite for every remote operation; managing
+it internally makes the tool self-contained.
+
+**Per-command SSH tunnel** — SSH handshake costs ~500ms per invocation. A
+long-lived tunnel amortizes the cost across all `wt` commands.
+
+**Remote TUI over SSH** — Running the TUI on the remote host and forwarding the
+terminal adds latency to every keystroke and breaks the local-client model where
+`opencode attach` runs on the laptop.

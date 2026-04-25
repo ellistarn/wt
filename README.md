@@ -29,5 +29,3 @@ Environment variables:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `WT_REMOTE_HOST` | For `-r` operations | — | SSH hostname of the remote dev desktop |
-| `WT_LOCAL_SERVER` | No | `http://localhost:4100` | Local OpenCode server URL |
-| `WT_REMOTE_SERVER` | No | `http://localhost:4101` | Remote OpenCode server URL (via SSH tunnel) |
