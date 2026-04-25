@@ -81,8 +81,8 @@ full session state, including any work the agent completed while disconnected.
 
 Create or resume a worktree.
 
-- No args: pull the current branch from origin to ensure the worktree starts
-  from the latest remote state. Create a new worktree. Attach.
+- No args: pull the current branch to ensure the worktree starts from the
+  latest remote state. Create a new worktree. Attach.
 - With `name`: resume `<repo>/.worktrees/<name>`. Attach.
 
 ### `wt -r <path>`
@@ -92,7 +92,7 @@ Create a new remote worktree.
 - `path` identifies the repo as a local-style path
   (e.g., `~/src/acme/api`), translated to the remote
   equivalent.
-- Pulls the current branch from origin, then creates a new worktree. Attach.
+- Pulls the current branch, then creates a new worktree. Attach.
 
 ### Attach
 
