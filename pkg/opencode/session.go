@@ -66,9 +66,10 @@ func checkHealthFast(serverURL string) error {
 }
 
 // FindLatestSession queries the OpenCode server for the most recent session
-// in the given directory. Returns empty string if none found or server unreachable.
+// in the given directory. Returns empty string if none found or on error.
+// Best-effort — used for session resumption where failure means a new session.
 func FindLatestSession(serverURL, directory string) string {
-	s := QuerySession(serverURL, directory)
+	s, _ := QuerySession(serverURL, directory)
 	if s == nil {
 		return ""
 	}
@@ -76,13 +77,16 @@ func FindLatestSession(serverURL, directory string) string {
 }
 
 // QuerySession queries the OpenCode server for the most recent session
-// in the given directory. Returns nil if none found or server unreachable.
-func QuerySession(serverURL, directory string) *Session {
-	sessions := listSessions(serverURL, directory)
-	if len(sessions) == 0 {
-		return nil
+// in the given directory. Returns nil if none found.
+func QuerySession(serverURL, directory string) (*Session, error) {
+	sessions, err := listSessions(serverURL, directory)
+	if err != nil {
+		return nil, err
 	}
-	return &sessions[0]
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	return &sessions[0], nil
 }
 
 // Enrich enriches worktree entries with session data from the OpenCode server.
@@ -93,7 +97,10 @@ func Enrich(serverURL string, entries []worktree.Entry) error {
 	}
 
 	for i := range entries {
-		s := QuerySession(serverURL, entries[i].Dir)
+		s, err := QuerySession(serverURL, entries[i].Dir)
+		if err != nil {
+			return err
+		}
 		if s == nil {
 			continue
 		}
@@ -122,25 +129,25 @@ func Enrich(serverURL string, entries []worktree.Entry) error {
 
 // listSessions fetches sessions from the server, optionally filtered by directory.
 // Returns sessions sorted by most recently updated first.
-func listSessions(serverURL, directory string) []Session {
+func listSessions(serverURL, directory string) ([]Session, error) {
 	u := serverURL + "/session?limit=1000"
 	if directory != "" {
 		u += "&directory=" + url.QueryEscape(directory)
 	}
 	resp, err := httpGet(u)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var sessions []Session
 	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode session response: %w", err)
 	}
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].Time.Updated > sessions[j].Time.Updated
 	})
-	return sessions
+	return sessions, nil
 }
 
 // fetchSessionTokens returns the context window size for the session — the

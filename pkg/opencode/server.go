@@ -63,6 +63,7 @@ func EnsureLocalServer() error {
 
 	for i := 0; i < 20; i++ {
 		if healthProbe(url) == nil {
+			fmt.Fprintf(os.Stderr, "started opencode server on port %d\n", port)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -92,6 +93,7 @@ func EnsureRemoteServer(host string) error {
 
 	for i := 0; i < 20; i++ {
 		if healthProbe(tunnelURL) == nil {
+			fmt.Fprintf(os.Stderr, "started remote opencode server via %s\n", host)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
