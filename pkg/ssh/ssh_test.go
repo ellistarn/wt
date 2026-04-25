@@ -14,6 +14,9 @@ func TestEnsureTunnel_BadHost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping in short mode")
 	}
+	if tunnelHealthy(5097) {
+		t.Skip("tunnel port already in use; cannot test bad-host path")
+	}
 	err := EnsureTunnel("wt-nonexistent-host-test", 5097, 5096)
 	if err == nil {
 		t.Fatal("expected error for unreachable host")

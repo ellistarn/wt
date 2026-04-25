@@ -122,7 +122,9 @@ Create or resume a worktree.
 
 - No args: pull the current branch to ensure the worktree starts from the
   latest remote state. Create a new worktree. Attach.
-- With `name`: resume `<repo>/.worktrees/<name>`. Attach.
+- With `name`: pull the repo's default branch (best-effort) to keep it fresh
+  for future worktree creation and merge detection. Resume
+  `<repo>/.worktrees/<name>`. Attach.
 
 ### `wt -r <path>`
 
@@ -148,31 +150,34 @@ All attach operations follow the same steps:
 If no session exists for the worktree, `opencode attach` is run without
 `--session`. OpenCode creates a new session on first prompt.
 
-### `wt rm [name] [--force] [--stale N] [--dry-run]`
+### `wt rm [name] [--dry-run]`
 
-Remove worktrees that are safe to clean up.
+Remove worktrees.
 
-A worktree is safe to remove when there is nothing left to lose and no reason
-to come back.
+**Targeted** (`wt rm <name>`): removes the worktree unconditionally.
+Force-deletes the worktree directory and branch. The user already knows the
+state from `wt ls` or `wt rm --dry-run`.
 
-**Nothing left to lose** — working tree is clean, no unpushed commits, and
-agent is not actively generating.
+**Batch** (`wt rm`): removes worktrees that are safe to clean up. A worktree is
+safe when there is no at-risk git state (clean working tree, no commits not on
+the default branch). Classification:
 
-**No reason to come back** — branch is merged, no session exists, or session
-is stale (inactive longer than `--stale` threshold, default 12 hours) with no
-commits on the branch. Squash merges cannot be safely detected because the
-commit hash has changed. These worktrees are removed when stale or by targeted
-`wt rm <name>`.
+| Action | Label | Meaning |
+|--------|-------|---------|
+| remove | `empty` | No session was ever created |
+| remove | `merged` | Branch tip is ancestor of `origin/<default>` |
+| remove | `stale` | Session inactive >12 hours, no unique commits |
+| keep | `dirty` | Uncommitted changes in working tree |
+| keep | `committed` | Unique commits not merged into default branch |
+| keep | `active` | Session exists, not stale, no unique commits |
 
-- No args: batch mode. Requires both. Print what was removed and skipped.
-- With `name`: targeted mode. Requires nothing left to lose; warns about
-  reason to come back.
-- `--stale N`: override the stale threshold (default 12 hours).
-- `--dry-run`: preview without removing.
-- `--force`: skip all checks.
+Squash merges cannot be detected because the commit hash changes. These
+worktrees are removed when stale or by targeted `wt rm <name>`.
 
-Fetches from origin before checking. Removal deletes the worktree directory
-and the branch. Session history in the database is not touched.
+- `--dry-run`: preview classification without removing.
+
+Batch rm fetches from origin before classifying. Removal deletes the worktree
+directory and the branch. Session history in the database is not touched.
 
 ### `wt ls`
 
