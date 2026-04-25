@@ -81,7 +81,7 @@ func EnsureRemoteServer(host string) error {
 	}
 
 	port := ServerPort()
-	startCmd := fmt.Sprintf("nohup opencode serve --port %d >/dev/null 2>&1 &", port)
+	startCmd := fmt.Sprintf("$SHELL -ic 'nohup opencode serve --port %d </dev/null >/dev/null 2>&1 &'", port)
 	if _, err := ssh.Run(host, startCmd); err != nil {
 		// Race — someone else may have started it.
 		if healthProbe(tunnelURL) == nil {
