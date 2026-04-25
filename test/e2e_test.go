@@ -387,6 +387,36 @@ func TestBatchRm_DryRun(t *testing.T) {
 	}
 }
 
+// TestBatchRm_RegressionPrunedTrackingRef verifies that squash merge detection
+// works even when the remote tracking ref (refs/remotes/origin/<branch>) has
+// been pruned. Previously IsMerged gated on the tracking ref existing, so
+// fetch.prune=true would cause merged branches to be classified as "committed".
+func TestBatchRm_RegressionPrunedTrackingRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a branch, push, squash-merge, then prune the tracking ref
+	wt := env.addWorktree("pruned-ref")
+	env.commitFile(wt, "h.txt", "pruned", "pruned feature")
+	env.push("pruned-ref")
+	env.createSession(wt)
+	env.squashMergeToMain("pruned-ref")
+	gitCmd(t, env.repo, "checkout", "main")
+
+	// Simulate fetch.prune=true deleting the tracking ref
+	gitCmd(t, env.repo, "update-ref", "-d", "refs/remotes/origin/pruned-ref")
+
+	out := env.wt("rm", "--dry-run")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "pruned-ref") || !strings.Contains(out, "remove (merged)") {
+		t.Error("squash-merged worktree with pruned tracking ref should be classified as remove (merged)")
+	}
+}
+
 func TestBatchRm_SessionActiveSkipped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")

@@ -258,7 +258,7 @@ func cmdRm(args []string, remoteOnly bool) {
 	}
 
 	if name != "" {
-		cmdRmTargeted(name)
+		cmdRmTargeted(name, dryRun)
 	} else {
 		cmdRmBatch(remoteOnly, dryRun)
 	}
@@ -362,7 +362,10 @@ func classifyForRm(e worktree.Entry) (action, reason string) {
 		keepReasons = append(keepReasons, "dirty")
 	}
 	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	merged := git.IsMerged(host, e.Repo, e.Name)
+	var merged bool
+	if unique > 0 {
+		merged = git.IsMerged(host, e.Repo, e.Name)
+	}
 	if unique > 0 && !merged {
 		keepReasons = append(keepReasons, "committed")
 	}
@@ -469,18 +472,22 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 	}
 }
 
-func cmdRmTargeted(name string) {
+func cmdRmTargeted(name string, dryRun bool) {
 	entry, ok := findWorktree(name)
 	if !ok {
 		die("worktree %q not found", name)
 	}
 	host := hostFor(entry)
-	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
-		die("%v", err)
+	status := "remove"
+	if !dryRun {
+		if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
+			die("%v", err)
+		}
+		status = "removed"
 	}
 	display.PrintTable([]display.Row{{
 		Entry:  entry,
-		Status: "removed",
+		Status: status,
 	}})
 }
 

@@ -157,11 +157,11 @@ func TestSSH_BatchRm_DryRun(t *testing.T) {
 	out := env.wt("-r", "rm", "--dry-run")
 	t.Log("SSH dry-run output:\n" + out)
 
-	assertContains(t, out, "Would remove")
+	assertContains(t, out, "remove")
 	assertContains(t, out, "ssh-clean")
 	assertContains(t, out, "ssh-merged")
 
-	assertContains(t, out, "Skipped")
+	assertContains(t, out, "keep")
 	assertContains(t, out, "ssh-dirty")
 	assertContains(t, out, "ssh-unpushed")
 }
