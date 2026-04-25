@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-// Host returns DEV_DESKTOP_HOST or an error if unset.
+// Host returns WT_REMOTE_HOST or an error if unset.
 func Host() (string, error) {
-	host := os.Getenv("DEV_DESKTOP_HOST")
+	host := os.Getenv("WT_REMOTE_HOST")
 	if host == "" {
-		return "", fmt.Errorf("DEV_DESKTOP_HOST is not set")
+		return "", fmt.Errorf("WT_REMOTE_HOST is not set\n\nRemote operations require an SSH host. Set the environment variable:\n\n  export WT_REMOTE_HOST=your-dev-desktop")
 	}
 	return host, nil
 }
@@ -31,13 +31,13 @@ func Run(host, cmd string) (string, error) {
 // ResolveRemoteHome resolves and caches the remote physical home directory.
 func ResolveRemoteHome(host string) (string, error) {
 	cacheDir, _ := os.UserCacheDir()
-	cachePath := filepath.Join(cacheDir, "wt-remote-home")
+	cachePath := filepath.Join(cacheDir, "wt-remote-home-"+host)
 
 	if data, err := os.ReadFile(cachePath); err == nil {
 		return strings.TrimSpace(string(data)), nil
 	}
 
-	out, err := Run(host, "readlink -f $HOME")
+	out, err := Run(host, `cd "$HOME" && pwd -P`)
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve remote HOME: %w", err)
 	}

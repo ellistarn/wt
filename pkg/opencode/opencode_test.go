@@ -46,21 +46,21 @@ func TestParseAttachDir(t *testing.T) {
 	}{
 		{
 			name:    "node wrapper",
-			line:    "/opt/homebrew/opt/node/bin/node /opt/homebrew/bin/opencode attach http://localhost:9000 --dir /Users/me/.worktrees/fix-auth",
-			wantDir: "/Users/me/.worktrees/fix-auth",
+			line:    "/usr/local/bin/node /usr/local/bin/opencode attach http://localhost:4100 --dir /home/me/.worktrees/fix-auth",
+			wantDir: "/home/me/.worktrees/fix-auth",
 		},
 		{
 			name:    "native binary",
-			line:    "/opt/homebrew/Cellar/opencode/1.4.10/libexec/lib/node_modules/opencode-ai/node_modules/opencode-darwin-arm64/bin/opencode attach http://localhost:9000 --dir /Users/me/.worktrees/fix-auth",
-			wantDir: "/Users/me/.worktrees/fix-auth",
+			line:    "/usr/lib/opencode/bin/opencode attach http://localhost:4100 --dir /home/me/.worktrees/fix-auth",
+			wantDir: "/home/me/.worktrees/fix-auth",
 		},
 		{
 			name: "bare opencode ignored",
-			line: "/opt/homebrew/bin/opencode",
+			line: "/usr/local/bin/opencode",
 		},
 		{
 			name: "server process ignored",
-			line: "/opt/homebrew/bin/opencode serve --port 9000",
+			line: "/usr/local/bin/opencode serve --port 4100",
 		},
 		{
 			name: "unrelated process",
@@ -72,7 +72,7 @@ func TestParseAttachDir(t *testing.T) {
 		},
 		{
 			name: "attach without --dir",
-			line: "/opt/homebrew/bin/opencode attach http://localhost:9000",
+			line: "/usr/local/bin/opencode attach http://localhost:4100",
 		},
 	}
 

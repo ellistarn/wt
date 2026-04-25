@@ -85,8 +85,8 @@ func TestFormatRepo(t *testing.T) {
 		remote bool
 		want   string
 	}{
-		{"/Users/etarn/go/src/github.com/ellistarn/wt", false, "/Users/etarn/.../ellistarn/wt"},
-		{"/Users/etarn/go/src/github.com/ellistarn/wt", true, "[remote] /Users/etarn/.../ellistarn/wt"},
+		{"/home/user/src/github.com/acme/project", false, "/home/user/.../acme/project"},
+		{"/home/user/src/github.com/acme/project", true, "[remote] /home/user/.../acme/project"},
 		{"/short/path", false, "/short/path"},
 		{"/short/path", true, "[remote] /short/path"},
 	}
@@ -104,8 +104,8 @@ func TestPrintTable(t *testing.T) {
 		{
 			Entry: worktree.Entry{
 				Name:      "0424T0907-93511",
-				Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T0907-93511",
-				Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
+				Dir:       "/home/user/src/github.com/acme/project/.worktrees/0424T0907-93511",
+				Repo:      "/home/user/src/github.com/acme/project",
 				Status:    "idle",
 				Title:     "Fix auth handler",
 				Tokens:    42000,
@@ -117,8 +117,8 @@ func TestPrintTable(t *testing.T) {
 		{
 			Entry: worktree.Entry{
 				Name:      "0424T1035-627",
-				Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T1035-627",
-				Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
+				Dir:       "/home/user/src/github.com/acme/project/.worktrees/0424T1035-627",
+				Repo:      "/home/user/src/github.com/acme/project",
 				CreatedAt: now.Add(-1 * time.Hour),
 			},
 			Status: "-",

@@ -41,7 +41,7 @@ func LocalServerURL() string {
 	if u := os.Getenv("WT_LOCAL_SERVER"); u != "" {
 		return u
 	}
-	return "http://localhost:9000"
+	return "http://localhost:4100"
 }
 
 // RemoteServerURL returns the remote OpenCode server URL.
@@ -49,11 +49,7 @@ func RemoteServerURL() string {
 	if u := os.Getenv("WT_REMOTE_SERVER"); u != "" {
 		return u
 	}
-	port := os.Getenv("DEV_DESKTOP_TUNNEL_PORT")
-	if port == "" {
-		port = "9847"
-	}
-	return fmt.Sprintf("http://opencode.etarn:%s", port)
+	return "http://localhost:4101"
 }
 
 // CheckHealth verifies that the OpenCode server is reachable.
