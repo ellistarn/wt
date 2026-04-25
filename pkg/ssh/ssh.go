@@ -89,6 +89,7 @@ func EnsureTunnel(host string, localPort, remotePort int) error {
 	// Wait for the tunnel to accept connections.
 	for i := 0; i < 20; i++ {
 		if tunnelHealthy(localPort) {
+			fmt.Fprintf(os.Stderr, "started SSH tunnel to %s (localhost:%d)\n", host, localPort)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
