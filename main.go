@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -78,6 +79,12 @@ func cmdLocal(args []string) {
 		if err := attach(serverURL, wtDir, ""); err != nil {
 			die("%v", err)
 		}
+		printExitRow(serverURL, worktree.Entry{
+			Name:      name,
+			Dir:       wtDir,
+			Repo:      repo,
+			CreatedAt: time.Now(),
+		})
 		return
 	}
 
@@ -92,12 +99,14 @@ func cmdLocal(args []string) {
 		if err := attach(serverURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
+		printExitRow(serverURL, entry)
 	} else {
 		remoteURL := opencode.RemoteServerURL()
 		sessionID := opencode.FindLatestSession(remoteURL, entry.Dir)
 		if err := attach(remoteURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
+		printExitRow(remoteURL, entry)
 	}
 }
 
@@ -141,6 +150,13 @@ func cmdRemote(args []string) {
 	if err := attach(serverURL, wtDir, sessionID); err != nil {
 		die("%v", err)
 	}
+	printExitRow(serverURL, worktree.Entry{
+		Name:      name,
+		Dir:       wtDir,
+		Repo:      repo,
+		Remote:    true,
+		CreatedAt: time.Now(),
+	})
 }
 
 // findWorktree discovers all worktrees (local and remote) and returns the one matching name.
@@ -178,7 +194,14 @@ func cmdLs(remoteOnly bool) {
 	if enrichErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n\n", enrichErr)
 	}
-	display.PrintTable(all)
+	rows := make([]display.Row, len(all))
+	for i, e := range all {
+		rows[i] = display.Row{
+			Entry:  e,
+			Status: display.FormatStatus(e.Status, e.Attached),
+		}
+	}
+	display.PrintTable(rows)
 }
 
 // cmdRm handles: wt rm [name] [--force] [--stale N] [--dry-run]
@@ -243,18 +266,18 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 		remoteCh <- nil
 	}
 
-	// Discover in parallel, then enrich sequentially.
+	// Discover in parallel, then enrich via server API.
 	var local, remote []worktree.Entry
 
 	local = <-localCh
 	remote = <-remoteCh
 
 	var enrichErr error
-	if err := opencode.EnrichLocal(local); err != nil {
+	if err := opencode.Enrich(opencode.LocalServerURL(), local); err != nil {
 		enrichErr = fmt.Errorf("local session query: %w", err)
 	}
 	if host != "" {
-		if err := opencode.EnrichRemote(host, remote); err != nil {
+		if err := opencode.Enrich(opencode.RemoteServerURL(), remote); err != nil {
 			enrichErr = fmt.Errorf("remote session query: %w", err)
 		}
 	}
@@ -339,6 +362,44 @@ func workflowSkipReason(e worktree.Entry) string {
 	return "session active"
 }
 
+// classifyForRm determines the action (remove/keep) and reason for a worktree.
+func classifyForRm(e worktree.Entry, staleThreshold time.Duration) (action, reason string) {
+	host := hostFor(e)
+
+	// Data safety gates — accumulate all reasons
+	var keepReasons []string
+	if e.Status == "working" {
+		keepReasons = append(keepReasons, "working")
+	}
+	if !git.IsClean(host, e.Dir) {
+		keepReasons = append(keepReasons, "dirty")
+	}
+	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
+	if unique > 0 && !git.IsPushed(host, e.Repo, e.Name) {
+		keepReasons = append(keepReasons, "unpushed")
+	}
+	if len(keepReasons) > 0 {
+		return "keep", strings.Join(keepReasons, ", ")
+	}
+
+	// Workflow gates — determine if work is done
+	if e.SessionID == "" {
+		return "remove", "unused"
+	}
+	if git.IsMerged(host, e.Repo, e.Name) {
+		return "remove", "merged"
+	}
+	if unique == 0 && !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > staleThreshold {
+		return "remove", "stale"
+	}
+
+	// Not done
+	if unique > 0 {
+		return "keep", "review"
+	}
+	return "keep", "active"
+}
+
 func cmdRmBatch(remoteOnly bool, staleThreshold time.Duration, dryRun bool) {
 	all, enrichErr := discoverAll(remoteOnly)
 	if enrichErr != nil {
@@ -346,58 +407,70 @@ func cmdRmBatch(remoteOnly bool, staleThreshold time.Duration, dryRun bool) {
 	}
 	fetchRepos(all)
 
-	type result struct {
-		entry  worktree.Entry
-		reason string // empty = removed
+	if len(all) == 0 {
+		fmt.Println("No worktrees found.")
+		return
 	}
-	var removed, skipped []result
+
+	type classified struct {
+		entry  worktree.Entry
+		action string
+		reason string
+	}
+	var results []classified
+	var removeCount int
 
 	for _, e := range all {
-		// Data safety gates
-		if reasons := checkDataSafety(e); len(reasons) > 0 {
-			skipped = append(skipped, result{e, strings.Join(reasons, ", ")})
-			continue
-		}
-		// Workflow gates
-		if !checkWorkflowDone(e, staleThreshold) {
-			skipped = append(skipped, result{e, workflowSkipReason(e)})
-			continue
-		}
-		// Safe to remove
-		if !dryRun {
+		action, reason := classifyForRm(e, staleThreshold)
+
+		// Actually remove if not dry-run
+		if action == "remove" && !dryRun {
 			host := hostFor(e)
 			if err := git.WorktreeRemove(host, e.Repo, e.Name); err != nil {
-				skipped = append(skipped, result{e, fmt.Sprintf("remove failed: %v", err)})
-				continue
+				action = "keep"
+				reason = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
+			} else {
+				action = "removed"
 			}
 		}
-		removed = append(removed, result{e, ""})
+
+		if action == "remove" || action == "removed" {
+			removeCount++
+		}
+		results = append(results, classified{e, action, reason})
 	}
 
-	now := time.Now()
-	verb := "Removed"
-	if dryRun {
-		verb = "Would remove"
-	}
-	if len(removed) > 0 {
-		fmt.Printf("%s:\n", verb)
-		for _, r := range removed {
-			fmt.Printf("  %s  (%s)\n", r.entry.Name, entryAge(r.entry, now))
+	// Sort: removes first, then keeps; by activity (newest first) within each group
+	isRemove := func(action string) bool { return action == "remove" || action == "removed" }
+	sort.SliceStable(results, func(i, j int) bool {
+		ri, rj := isRemove(results[i].action), isRemove(results[j].action)
+		if ri != rj {
+			return ri
+		}
+		// Within same group, sort by activity (newest first)
+		ti, tj := results[i].entry.UpdatedAt, results[j].entry.UpdatedAt
+		if !ti.IsZero() && !tj.IsZero() {
+			return ti.After(tj)
+		}
+		if !ti.IsZero() {
+			return true
+		}
+		if !tj.IsZero() {
+			return false
+		}
+		return false
+	})
+
+	rows := make([]display.Row, len(results))
+	for i, r := range results {
+		rows[i] = display.Row{
+			Entry:  r.entry,
+			Status: fmt.Sprintf("%s (%s)", r.action, r.reason),
 		}
 	}
-	if len(skipped) > 0 {
-		if len(removed) > 0 {
-			fmt.Println()
-		}
-		fmt.Println("Skipped:")
-		for _, r := range skipped {
-			fmt.Printf("  %s  (%s) — %s\n", r.entry.Name, entryAge(r.entry, now), r.reason)
-		}
-	}
-	if len(removed) == 0 && len(skipped) == 0 {
-		fmt.Println("No worktrees found.")
-	}
-	if len(removed) == 0 && len(skipped) > 0 {
+	display.PrintTable(rows)
+
+	if removeCount == 0 {
 		fmt.Println()
 		fmt.Println("Nothing to remove. Use 'wt rm <name>' to target specific worktrees.")
 	}
@@ -420,14 +493,17 @@ func cmdRmTargeted(name string, remoteOnly bool, force bool, dryRun bool) {
 	host := hostFor(*entry)
 
 	if force {
-		if dryRun {
-			fmt.Printf("Would remove %s (forced)\n", name)
-			return
+		action := "remove"
+		if !dryRun {
+			if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
+				die("%v", err)
+			}
+			action = "removed"
 		}
-		if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
-			die("%v", err)
-		}
-		fmt.Printf("Removed %s (forced)\n", name)
+		display.PrintTable([]display.Row{{
+			Entry:  *entry,
+			Status: fmt.Sprintf("%s (forced)", action),
+		}})
 		return
 	}
 
@@ -453,27 +529,17 @@ func cmdRmTargeted(name string, remoteOnly bool, force bool, dryRun bool) {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", workflowSkipReason(*entry))
 	}
 
-	if dryRun {
-		fmt.Printf("Would remove %s\n", name)
-		return
+	action, reason := classifyForRm(*entry, 0)
+	if !dryRun {
+		if err := git.WorktreeRemove(host, entry.Repo, entry.Name); err != nil {
+			die("%v", err)
+		}
+		action = "removed"
 	}
-
-	if err := git.WorktreeRemove(host, entry.Repo, entry.Name); err != nil {
-		die("%v", err)
-	}
-	fmt.Printf("Removed %s\n", name)
-}
-
-// entryAge returns a human-readable age string for a worktree entry.
-func entryAge(e worktree.Entry, now time.Time) string {
-	t := e.UpdatedAt
-	if t.IsZero() {
-		t = e.CreatedAt
-	}
-	if t.IsZero() {
-		return "unknown age"
-	}
-	return display.FormatAge(t, now)
+	display.PrintTable([]display.Row{{
+		Entry:  *entry,
+		Status: fmt.Sprintf("%s (%s)", action, reason),
+	}})
 }
 
 func printUsage() {
@@ -502,6 +568,19 @@ Flags:
 func die(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "wt: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// printExitRow queries the server for the session in dir and prints a single
+// table row showing the worktree's current state. Best-effort; silently skipped
+// if the server is unreachable.
+func printExitRow(serverURL string, entry worktree.Entry) {
+	entries := []worktree.Entry{entry}
+	opencode.Enrich(serverURL, entries)
+	entry = entries[0]
+	display.PrintTable([]display.Row{{
+		Entry:  entry,
+		Status: display.FormatStatus(entry.Status, entry.Attached),
+	}})
 }
 
 // attach runs opencode attach as a subprocess, connecting to the given server.

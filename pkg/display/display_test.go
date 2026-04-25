@@ -23,9 +23,9 @@ func TestFormatStatus(t *testing.T) {
 		{"working", true, "attached"},
 	}
 	for _, tt := range tests {
-		got := formatStatus(tt.status, tt.attached)
+		got := FormatStatus(tt.status, tt.attached)
 		if got != tt.want {
-			t.Errorf("formatStatus(%q, %v) = %q, want %q", tt.status, tt.attached, got, tt.want)
+			t.Errorf("FormatStatus(%q, %v) = %q, want %q", tt.status, tt.attached, got, tt.want)
 		}
 	}
 }
@@ -100,22 +100,28 @@ func TestFormatRepo(t *testing.T) {
 
 func TestPrintTable(t *testing.T) {
 	now := time.Now()
-	entries := []worktree.Entry{
+	rows := []Row{
 		{
-			Name:      "0424T0907-93511",
-			Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T0907-93511",
-			Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
-			Status:    "idle",
-			Title:     "Fix auth handler",
-			Tokens:    42000,
-			CreatedAt: now.Add(-3 * time.Hour),
-			UpdatedAt: now.Add(-5 * time.Minute),
+			Entry: worktree.Entry{
+				Name:      "0424T0907-93511",
+				Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T0907-93511",
+				Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
+				Status:    "idle",
+				Title:     "Fix auth handler",
+				Tokens:    42000,
+				CreatedAt: now.Add(-3 * time.Hour),
+				UpdatedAt: now.Add(-5 * time.Minute),
+			},
+			Status: "idle",
 		},
 		{
-			Name:      "0424T1035-627",
-			Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T1035-627",
-			Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
-			CreatedAt: now.Add(-1 * time.Hour),
+			Entry: worktree.Entry{
+				Name:      "0424T1035-627",
+				Dir:       "/Users/etarn/go/src/github.com/ellistarn/wt/.worktrees/0424T1035-627",
+				Repo:      "/Users/etarn/go/src/github.com/ellistarn/wt",
+				CreatedAt: now.Add(-1 * time.Hour),
+			},
+			Status: "-",
 		},
 	}
 
@@ -127,7 +133,7 @@ func TestPrintTable(t *testing.T) {
 	old := os.Stdout
 	os.Stdout = w
 
-	PrintTable(entries)
+	PrintTable(rows)
 
 	w.Close()
 	os.Stdout = old
@@ -143,7 +149,7 @@ func TestPrintTable(t *testing.T) {
 
 	// Header should have the right columns.
 	header := lines[0]
-	for _, col := range []string{"WORKTREE", "TITLE", "STATUS", "ACTIVITY", "TOKENS", "REPO", "AGE"} {
+	for _, col := range []string{"WORKTREE", "STATUS", "TITLE", "ACTIVITY", "TOKENS", "REPO", "AGE"} {
 		if !strings.Contains(header, col) {
 			t.Errorf("header missing column %q: %s", col, header)
 		}

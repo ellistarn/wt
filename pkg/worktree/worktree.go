@@ -28,31 +28,29 @@ func GenerateName() string {
 	return fmt.Sprintf("%s-%d", now.Format("0102T1504"), rand.Intn(100000))
 }
 
-// Sort sorts entries by most recent activity, newest first.
-// Uses UpdatedAt if available, otherwise CreatedAt.
-// Entries without any timestamp sort to the end.
+// Sort sorts entries by most recent activity (UpdatedAt), newest first.
+// Entries without activity sort to the end, ordered by CreatedAt newest first.
 func Sort(entries []Entry) {
 	sort.SliceStable(entries, func(i, j int) bool {
-		ti := sortTime(entries[i])
-		tj := sortTime(entries[j])
-		if ti.IsZero() && tj.IsZero() {
-			return entries[i].Name < entries[j].Name
+		ai := entries[i].UpdatedAt
+		aj := entries[j].UpdatedAt
+		// Both have activity — sort by most recent
+		if !ai.IsZero() && !aj.IsZero() {
+			return ai.After(aj)
 		}
-		if ti.IsZero() {
-			return false
-		}
-		if tj.IsZero() {
+		// Only one has activity — it wins
+		if !ai.IsZero() {
 			return true
 		}
-		return ti.After(tj)
+		if !aj.IsZero() {
+			return false
+		}
+		// Neither has activity — sort by creation time
+		if !entries[i].CreatedAt.IsZero() && !entries[j].CreatedAt.IsZero() {
+			return entries[i].CreatedAt.After(entries[j].CreatedAt)
+		}
+		return entries[i].Name < entries[j].Name
 	})
-}
-
-func sortTime(e Entry) time.Time {
-	if !e.UpdatedAt.IsZero() {
-		return e.UpdatedAt
-	}
-	return e.CreatedAt
 }
 
 // TimeUnix converts a unix timestamp to time.Time.
