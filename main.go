@@ -404,6 +404,7 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 		entry  worktree.Entry
 		action string
 		reason string
+		errMsg string
 	}
 	var results []classified
 	var removeCount int
@@ -412,11 +413,13 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 		action, reason := classifyForRm(e)
 
 		// Actually remove if not dry-run
+		var errMsg string
 		if action == "remove" && !dryRun {
 			host := hostFor(e)
 			if err := git.WorktreeRemove(host, e.Repo, e.Name); err != nil {
 				action = "keep"
-				reason = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
+				reason = "error"
+				errMsg = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
 			} else {
 				action = "removed"
 			}
@@ -425,7 +428,7 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 		if action == "remove" || action == "removed" {
 			removeCount++
 		}
-		results = append(results, classified{e, action, reason})
+		results = append(results, classified{e, action, reason, errMsg})
 	}
 
 	// Sort: removes first, then keeps; by activity (newest first) within each group
@@ -457,6 +460,12 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 		}
 	}
 	display.PrintTable(rows)
+
+	for _, r := range results {
+		if r.errMsg != "" {
+			fmt.Fprintf(os.Stderr, "ERROR: %s: %s\n", r.entry.Name, r.errMsg)
+		}
+	}
 
 	if removeCount == 0 {
 		fmt.Println()
