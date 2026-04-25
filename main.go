@@ -356,7 +356,8 @@ func classifyForRm(e worktree.Entry) (action, reason string) {
 		keepReasons = append(keepReasons, "dirty")
 	}
 	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	if unique > 0 && !git.IsMerged(host, e.Repo, e.Name) {
+	merged := git.IsMerged(host, e.Repo, e.Name)
+	if unique > 0 && !merged {
 		keepReasons = append(keepReasons, "committed")
 	}
 	if len(keepReasons) > 0 {
@@ -367,7 +368,7 @@ func classifyForRm(e worktree.Entry) (action, reason string) {
 	if e.SessionID == "" {
 		return "remove", "empty"
 	}
-	if git.IsMerged(host, e.Repo, e.Name) {
+	if merged {
 		return "remove", "merged"
 	}
 	if unique == 0 && !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > staleThreshold {
