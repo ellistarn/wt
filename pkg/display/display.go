@@ -105,10 +105,10 @@ func formatTokens(tokens int) string {
 // formatRepo shortens the repo path to <home>/.../last/two and tags remote entries.
 func formatRepo(repo string, remote bool) string {
 	parts := strings.Split(repo, "/")
-	// Shorten: keep first 3 segments (e.g., "", "Users", "etarn"), then .../, then last 2.
+	// Shorten: keep first 3 segments (e.g., "", "home", "user"), then .../, then last 2.
 	// Only shorten if there are more than 5 segments (home + at least 3 intermediate + 2 tail).
 	if len(parts) > 5 {
-		head := strings.Join(parts[:3], "/") // e.g., /Users/etarn
+		head := strings.Join(parts[:3], "/") // e.g., /home/user
 		tail := strings.Join(parts[len(parts)-2:], "/")
 		repo = head + "/.../" + tail
 	}

@@ -159,21 +159,35 @@ func cmdRemote(args []string) {
 	})
 }
 
+type remoteResult struct {
+	entries []worktree.Entry
+	err     error
+}
+
 // findWorktree discovers all worktrees (local and remote) and returns the one matching name.
 func findWorktree(name string) (worktree.Entry, bool) {
-	host := os.Getenv("DEV_DESKTOP_HOST")
+	host := os.Getenv("WT_REMOTE_HOST")
 
 	localCh := make(chan []worktree.Entry, 1)
-	remoteCh := make(chan []worktree.Entry, 1)
+	remoteCh := make(chan remoteResult, 1)
 
 	go func() { localCh <- discover.ListLocal() }()
 	if host != "" {
-		go func() { remoteCh <- discover.ListRemote(host) }()
+		go func() {
+			entries, err := discover.ListRemote(host)
+			remoteCh <- remoteResult{entries, err}
+		}()
 	} else {
-		remoteCh <- nil
+		remoteCh <- remoteResult{}
 	}
 
-	all := append(<-localCh, <-remoteCh...)
+	local := <-localCh
+	rr := <-remoteCh
+	if rr.err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
+	}
+
+	all := append(local, rr.entries...)
 	for _, e := range all {
 		if e.Name == name {
 			return e, true
@@ -246,10 +260,10 @@ func cmdRm(args []string, remoteOnly bool) {
 // Returns any enrichment error — callers that make safety decisions must
 // check this; callers that only display can ignore it.
 func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
-	host := os.Getenv("DEV_DESKTOP_HOST")
+	host := os.Getenv("WT_REMOTE_HOST")
 
 	localCh := make(chan []worktree.Entry, 1)
-	remoteCh := make(chan []worktree.Entry, 1)
+	remoteCh := make(chan remoteResult, 1)
 
 	if !remoteOnly {
 		go func() { localCh <- discover.ListLocal() }()
@@ -258,37 +272,44 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 	}
 
 	if host != "" {
-		go func() { remoteCh <- discover.ListRemote(host) }()
+		go func() {
+			entries, err := discover.ListRemote(host)
+			remoteCh <- remoteResult{entries, err}
+		}()
 	} else {
 		if remoteOnly {
-			die("DEV_DESKTOP_HOST is not set")
+			die("WT_REMOTE_HOST is not set\n\nRemote operations require an SSH host. Set the environment variable:\n\n  export WT_REMOTE_HOST=your-dev-desktop")
 		}
-		remoteCh <- nil
+		remoteCh <- remoteResult{}
 	}
 
 	// Discover in parallel, then enrich via server API.
-	var local, remote []worktree.Entry
-
-	local = <-localCh
-	remote = <-remoteCh
+	local := <-localCh
+	rr := <-remoteCh
+	if rr.err != nil {
+		if remoteOnly {
+			die("%v", rr.err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
+	}
 
 	var enrichErr error
 	if err := opencode.Enrich(opencode.LocalServerURL(), local); err != nil {
 		enrichErr = fmt.Errorf("local session query: %w", err)
 	}
-	if host != "" {
-		if err := opencode.Enrich(opencode.RemoteServerURL(), remote); err != nil {
+	if host != "" && rr.err == nil {
+		if err := opencode.Enrich(opencode.RemoteServerURL(), rr.entries); err != nil {
 			enrichErr = fmt.Errorf("remote session query: %w", err)
 		}
 	}
 
-	return append(local, remote...), enrichErr
+	return append(local, rr.entries...), enrichErr
 }
 
 // hostFor returns the SSH host for an entry, or "" for local entries.
 func hostFor(e worktree.Entry) string {
 	if e.Remote {
-		return os.Getenv("DEV_DESKTOP_HOST")
+		return os.Getenv("WT_REMOTE_HOST")
 	}
 	return ""
 }

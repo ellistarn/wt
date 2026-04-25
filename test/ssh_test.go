@@ -22,15 +22,15 @@ type sshTestEnv struct {
 
 func newSSHTestEnv(t *testing.T) *sshTestEnv {
 	t.Helper()
-	host := os.Getenv("DEV_DESKTOP_HOST")
+	host := os.Getenv("WT_REMOTE_HOST")
 	if host == "" {
-		t.Skip("DEV_DESKTOP_HOST not set, skipping SSH tests")
+		t.Skip("WT_REMOTE_HOST not set, skipping SSH tests")
 	}
 
 	name := fmt.Sprintf("wt-e2e-ssh-%d-%d", time.Now().UnixNano(), rand.Intn(100000))
 
 	// Resolve remote home (follow symlinks for path consistency)
-	remoteHome := strings.TrimSpace(sshRun(t, host, "readlink -f $HOME"))
+	remoteHome := strings.TrimSpace(sshRun(t, host, `cd "$HOME" && pwd -P`))
 	rootDir := remoteHome + "/" + name
 	repo := rootDir + "/repo"
 	dataDir := rootDir + "/data"
@@ -93,12 +93,12 @@ func (e *sshTestEnv) createSession(dir string) {
 		e.dataDir, dir))
 }
 
-// wt runs the local wt binary with DEV_DESKTOP_HOST set.
+// wt runs the local wt binary with WT_REMOTE_HOST set.
 func (e *sshTestEnv) wt(args ...string) string {
 	e.t.Helper()
 	cmd := exec.Command(wtBinary, args...)
 	cmd.Env = append(os.Environ(),
-		"DEV_DESKTOP_HOST="+e.host,
+		"WT_REMOTE_HOST="+e.host,
 		"XDG_DATA_HOME="+e.dataDir, // remote data dir — wt queries it over SSH
 	)
 	out, err := cmd.CombinedOutput()

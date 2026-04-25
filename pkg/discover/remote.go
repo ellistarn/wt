@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"fmt"
 	"path"
 	"strconv"
 	"strings"
@@ -13,10 +14,10 @@ import (
 // Uses find to walk the home directory (no depth limit from hardcoded globs),
 // prunes hidden dirs for speed, and collects worktree metadata including
 // timestamps in a single SSH call.
-func ListRemote(host string) []worktree.Entry {
+func ListRemote(host string) ([]worktree.Entry, error) {
 	script := `
 set -eu
-home=$(readlink -f "$HOME")
+home=$(cd "$HOME" && pwd -P)
 find "$home" -maxdepth 10 -type d \( -name .worktrees -print -prune -o -name '.*' -prune \) | while IFS= read -r wt_dir; do
     repo="${wt_dir%/.worktrees}"
     if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
@@ -25,7 +26,7 @@ find "$home" -maxdepth 10 -type d \( -name .worktrees -print -prune -o -name '.*
             /^branch / {
                 br=$2; sub(/^refs\/heads\//, "", br)
                 if (wt ~ /\/.worktrees\//) {
-                    cmd = "stat -c %Y \"" wt "/.git\" 2>/dev/null || echo 0"
+				    cmd = "stat -c %Y \"" wt "/.git\" 2>/dev/null || stat -f %m \"" wt "/.git\" 2>/dev/null || echo 0"
                     cmd | getline ts
                     close(cmd)
                     print wt "\t" br "\t" repo "\t" ts
@@ -37,7 +38,7 @@ done
 `
 	out, err := ssh.Run(host, script)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("cannot connect to remote host %q: %w", host, err)
 	}
 
 	var entries []worktree.Entry
@@ -62,5 +63,5 @@ done
 		}
 		entries = append(entries, e)
 	}
-	return entries
+	return entries, nil
 }

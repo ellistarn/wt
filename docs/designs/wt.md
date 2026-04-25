@@ -47,13 +47,13 @@ server with TUI clients attached via `opencode attach`.
 ### Local
 
 The OpenCode server runs on the laptop as a daemon (e.g. launchd) at a known
-port (`localhost:9000`). Worktrees and sessions live on the laptop.
+port (`localhost:4100`). Worktrees and sessions live on the laptop.
 
 ```
 laptop
-  opencode serve --port 9000         # daemon, always running
+  opencode serve --port 4100         # daemon, always running
        │
-  wt <name> ──> opencode attach http://localhost:9000
+  wt <name> ──> opencode attach http://localhost:4100
                   --dir <repo>/.worktrees/<name>
                   --session <id>
 ```
@@ -98,7 +98,7 @@ Create a new remote worktree.
 
 All attach operations follow the same steps:
 
-1. Resolve the server URL (local: `http://localhost:9000`, remote: tunnel URL).
+1. Resolve the server URL (local: `http://localhost:4100`, remote: `http://localhost:4101`).
 2. Health check: `GET /global/health`. Fail with a clear message if the server
    is not running.
 3. Query `GET /session` filtered by the worktree directory. Select the most

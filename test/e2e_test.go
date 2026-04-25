@@ -189,7 +189,7 @@ func (e *testEnv) wt(args ...string) string {
 	cmd := exec.Command(wtBinary, args...)
 	cmd.Dir = e.repo
 	cmd.Env = append(os.Environ(),
-		"DEV_DESKTOP_HOST=",
+		"WT_REMOTE_HOST=",
 		"WT_LOCAL_SERVER="+e.mockURL,
 	)
 	out, err := cmd.CombinedOutput()
@@ -414,4 +414,65 @@ func TestBatchRm_SessionWorkingSkipped(t *testing.T) {
 	// Just-created session is "working" (< 60s) — data gate blocks
 	assertContains(t, out, "batch-working")
 	assertContains(t, out, "keep (working)")
+}
+
+// --- Remote host configuration tests ---
+
+// wtRaw runs the wt binary with explicit env overrides, returning combined output and exit code.
+func wtRaw(t *testing.T, env []string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(wtBinary, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return string(out), exitErr.ExitCode()
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return string(out), 0
+}
+
+func TestRemote_HostNotSet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+
+	base := []string{"WT_REMOTE_HOST=", "HOME=" + t.TempDir()}
+
+	out, code := wtRaw(t, base, "-r", "ls")
+	if code == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	assertContains(t, out, "WT_REMOTE_HOST is not set")
+	assertContains(t, out, "export WT_REMOTE_HOST=")
+
+	out, code = wtRaw(t, base, "-r", "/tmp/fake")
+	if code == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	assertContains(t, out, "WT_REMOTE_HOST is not set")
+	assertContains(t, out, "export WT_REMOTE_HOST=")
+}
+
+func TestRemote_HostUnreachable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+
+	base := []string{"WT_REMOTE_HOST=wt-nonexistent-host-test", "HOME=" + t.TempDir()}
+
+	out, code := wtRaw(t, base, "-r", "ls")
+	if code == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	assertContains(t, out, "cannot connect to remote host")
+
+	out, code = wtRaw(t, base, "-r", "/tmp/fake")
+	if code == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	assertContains(t, out, "cannot resolve remote HOME")
 }

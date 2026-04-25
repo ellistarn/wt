@@ -10,7 +10,7 @@ WORKTREE            TITLE                              STATUS    ACTIVITY  TOKEN
 1213T0800-42069     Autonomous drone delivery           working   now       85k     /home/bezos/.../amazon/prime-air         12y
 0423T1600-12345     Add exceptions to Go                idle      6h        45k     /home/robpike/.../golang/go              1d
 1215T0900-80085     Actually open OpenAI                idle      10y       120k    /home/altman/.../openai/models           10y
-0423T0900-99999     -                                   -         -         -       /home/ellistarn/.../ellistarn/wt         1d
+0423T0900-99999     -                                   -         -         -       /home/user/.../acme/toolkit             1d
 ```
 
 ## Usage
@@ -21,3 +21,13 @@ wt <name>              # Attach to an existing worktree (local or remote)
 wt ls                  # List all worktrees
 wt -r <path>           # Create a new remote worktree and attach
 ```
+
+## Configuration
+
+Environment variables:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `WT_REMOTE_HOST` | For `-r` operations | — | SSH hostname of the remote dev desktop |
+| `WT_LOCAL_SERVER` | No | `http://localhost:4100` | Local OpenCode server URL |
+| `WT_REMOTE_SERVER` | No | `http://localhost:4101` | Remote OpenCode server URL (via SSH tunnel) |
