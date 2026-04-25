@@ -154,6 +154,21 @@ func Fetch(host, repo string) {
 	runGit(host, repo, "fetch", "origin")
 }
 
+// Pull fetches with prune and fast-forwards the current branch. Used before
+// creating worktrees so they branch from the latest remote state. Uses
+// --ff-only to fail explicitly if the local branch has diverged.
+func Pull(host, repo string) error {
+	if host == "" {
+		cmd := exec.Command("git", "-C", repo, "pull", "--ff-only", "--prune")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
+	_, err := runGit(host, repo, "pull", "--ff-only", "--prune")
+	return err
+}
+
 // WorktreeRemove removes the worktree directory and deletes the branch.
 // git worktree remove deletes the directory; git branch -d deletes the branch
 // (only if merged, safe delete).

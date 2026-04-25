@@ -27,13 +27,17 @@ func TestE2E_NoScreenClearOnExit(t *testing.T) {
 		t.Fatalf("build: %s\n%s", err, out)
 	}
 
-	// Create temp git repo with an initial commit
-	repo := t.TempDir()
+	// Create temp git repo with an origin remote and initial commit
+	tmp := t.TempDir()
+	bare := filepath.Join(tmp, "origin.git")
+	repo := filepath.Join(tmp, "repo")
 	for _, args := range [][]string{
-		{"git", "init", repo},
+		{"git", "init", "--bare", bare},
+		{"git", "clone", bare, repo},
 		{"git", "-C", repo, "config", "user.email", "test@test.com"},
 		{"git", "-C", repo, "config", "user.name", "Test"},
 		{"git", "-C", repo, "commit", "--allow-empty", "-m", "init"},
+		{"git", "-C", repo, "push", "origin", "main"},
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %s\n%s", args, err, out)
