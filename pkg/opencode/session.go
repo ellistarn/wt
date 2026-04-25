@@ -11,6 +11,10 @@ import (
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
+// StaleThreshold is the duration after which a session with no recent activity
+// is considered stale.
+const StaleThreshold = 12 * time.Hour
+
 // Session is the API response type from the OpenCode server.
 type Session struct {
 	ID        string `json:"id"`
@@ -111,6 +115,8 @@ func Enrich(serverURL string, entries []worktree.Entry) error {
 		if time.Since(entries[i].UpdatedAt) < 30*time.Second {
 			entries[i].Status = "working"
 			entries[i].Tokens = fetchSessionTokens(serverURL, s.ID)
+		} else if time.Since(entries[i].UpdatedAt) > StaleThreshold {
+			entries[i].Status = "stale"
 		} else {
 			entries[i].Status = "idle"
 		}

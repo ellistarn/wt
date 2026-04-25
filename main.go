@@ -352,10 +352,6 @@ func fetchRepos(entries []worktree.Entry) {
 	}
 }
 
-// staleThreshold is the duration after which a session with no unique commits
-// is considered abandoned and safe to remove.
-const staleThreshold = 12 * time.Hour
-
 // classifyForRm determines the action (remove/keep) and reason for a worktree.
 func classifyForRm(e worktree.Entry) (action, reason string) {
 	host := hostFor(e)
@@ -381,12 +377,12 @@ func classifyForRm(e worktree.Entry) (action, reason string) {
 	if merged {
 		return "remove", "merged"
 	}
-	if unique == 0 && !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > staleThreshold {
+	if unique == 0 && !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
 		return "remove", "stale"
 	}
 
-	// Not done — session active, no commits yet
-	return "keep", "active"
+	// Not done — session exists, no commits yet
+	return "keep", e.Status
 }
 
 func cmdRmBatch(remoteOnly bool, dryRun bool) {
