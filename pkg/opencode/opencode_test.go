@@ -46,12 +46,12 @@ func TestParseAttachDir(t *testing.T) {
 	}{
 		{
 			name:    "node wrapper",
-			line:    "/usr/local/bin/node /usr/local/bin/opencode attach http://localhost:4100 --dir /home/me/.worktrees/fix-auth",
+			line:    "/usr/local/bin/node /usr/local/bin/opencode attach http://localhost:4096 --dir /home/me/.worktrees/fix-auth",
 			wantDir: "/home/me/.worktrees/fix-auth",
 		},
 		{
 			name:    "native binary",
-			line:    "/usr/lib/opencode/bin/opencode attach http://localhost:4100 --dir /home/me/.worktrees/fix-auth",
+			line:    "/usr/lib/opencode/bin/opencode attach http://localhost:4096 --dir /home/me/.worktrees/fix-auth",
 			wantDir: "/home/me/.worktrees/fix-auth",
 		},
 		{
@@ -60,7 +60,7 @@ func TestParseAttachDir(t *testing.T) {
 		},
 		{
 			name: "server process ignored",
-			line: "/usr/local/bin/opencode serve --port 4100",
+			line: "/usr/local/bin/opencode serve --port 4096",
 		},
 		{
 			name: "unrelated process",
@@ -72,7 +72,7 @@ func TestParseAttachDir(t *testing.T) {
 		},
 		{
 			name: "attach without --dir",
-			line: "/usr/local/bin/opencode attach http://localhost:4100",
+			line: "/usr/local/bin/opencode attach http://localhost:4096",
 		},
 	}
 

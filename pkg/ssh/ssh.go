@@ -73,8 +73,8 @@ func ToRemotePath(localPath, remoteHome string) (string, error) {
 }
 
 // EnsureTunnel ensures an SSH tunnel from localhost:4101 to the remote host's
-// port 4100 is running. If the tunnel is already up, this is a no-op. Otherwise,
-// starts ssh -fNL 4101:localhost:4100 <host> and waits for it to come up.
+// port 4096 is running. If the tunnel is already up, this is a no-op. Otherwise,
+// starts ssh -fNL 4101:localhost:4096 <host> and waits for it to come up.
 // The tunnel is long-lived and shared across wt invocations.
 func EnsureTunnel(host string) error {
 	if tunnelHealthy() {
