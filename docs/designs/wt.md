@@ -152,33 +152,23 @@ All attach operations follow the same steps:
 If no session exists for the worktree, `opencode attach` is run without
 `--session`. OpenCode creates a new session on first prompt.
 
-### `wt rm [name] [--dry-run]`
+### `wt rm [name]`
 
 Remove worktrees.
 
 **Targeted** (`wt rm <name>`): removes the worktree unconditionally.
 Force-deletes the worktree directory and branch. The user already knows the
-state from `wt ls` or `wt rm --dry-run`.
+state from `wt ls`.
 
-**Batch** (`wt rm`): removes worktrees that are safe to clean up. A worktree is
-safe when there is no at-risk git state (clean working tree, no commits not on
-the default branch). Classification:
-
-| Action | Label | Meaning |
-|--------|-------|---------|
-| remove | `empty` | No session was ever created |
-| remove | `merged` | Changes incorporated into `origin/<default>` (regular, fast-forward, or squash merge) |
-| remove | `stale` | Session inactive >12 hours, no unique commits |
-| keep | `dirty` | Uncommitted changes in working tree |
-| keep | `committed` | Unique commits not merged into default branch |
-| keep | `idle`/`working` | Session exists, not stale, no unique commits |
+**Batch** (`wt rm`): removes worktrees whose status is `merged`, `stale`, or
+`empty`. These are the worktrees with no at-risk state — either the work
+landed, the session went dormant with no commits, or no session was ever
+created. All other statuses are kept. `wt ls` is the preview.
 
 Squash merges are detected using `git merge-tree --write-tree` (requires git
 2.38+): if simulating a merge of the branch into `origin/<default>` produces a
 tree identical to the target's current tree, the branch's changes are already
 incorporated.
-
-- `--dry-run`: preview classification without removing.
 
 All read paths (ls, rm) fetch from origin to ensure remote-tracking refs are
 current. Removal deletes the worktree
@@ -186,9 +176,9 @@ directory and the branch. Session history in the database is not touched.
 
 ### `wt ls`
 
-List all worktrees and their session status. Local worktrees (all repos under
-`$HOME`) and remote worktrees (all repos on the dev desktop) are discovered
-concurrently and merged into a single table sorted by most recent activity.
+List all worktrees with their status. Local worktrees (all repos under `$HOME`)
+and remote worktrees (all repos on the dev desktop) are discovered concurrently
+and merged into a single table sorted by most recent activity.
 
 Session metadata is fetched from the OpenCode server API, not from the database
 directly. For each server (local and remote):
@@ -199,12 +189,16 @@ directly. For each server (local and remote):
    message's total token count (context window size) and derives working/idle
    from whether that message has completed.
 
+Git state is determined per worktree by checking the working tree and branch
+against `origin/<default>`.
+
 ```
-WORKTREE            TITLE                           STATUS    ACTIVITY  TOKENS  REPO                              AGE
-0423T1430-12847     Fix auth handler validation      attached  now       150k    [remote] /home/user/.../acme/api   3h
-0423T1600-4419      Refactor config parser           idle      5m        42k     /Users/user/.../acme/api           1d
-0423T1700-8812      Migrate database schema          working   now       12k     [remote] /home/user/.../acme/api   2h
-0421T1100-5531      -                                -         -         -       [remote] /home/user/.../acme/web   2d
+WORKTREE            TITLE                           STATUS       ACTIVITY  TOKENS  REPO                              AGE
+0423T1430-12847     Fix auth handler validation      attached     now       150k    [remote] /home/user/.../acme/api   3h
+0423T1600-4419      Refactor config parser           committed    5m        42k     /Users/user/.../acme/api           1d
+0423T1700-8812      Migrate database schema          working      now       12k     [remote] /home/user/.../acme/api   2h
+0423T0900-2210      Add retry logic                  merged *     1h        80k     /Users/user/.../acme/api           2d
+0421T1100-5531      -                                empty *      -         -       [remote] /home/user/.../acme/web   2d
 ```
 
 Columns:
@@ -212,16 +206,32 @@ Columns:
 | Column | Value |
 |--------|-------|
 | WORKTREE | Worktree directory name (the stable identifier even if the branch is renamed). |
-| TITLE | Session title, auto-generated from the first prompt. |
-| STATUS | Highest-priority state: `attached` (TUI client connected), `working` (agent generating, no client), `idle` (session exists, no activity), `stale` (session idle >12 hours). Attachment is detected by scanning local `opencode attach` processes. No session shows `-`. |
-| ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). |
-| TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. |
+| TITLE | Session title, auto-generated from the first prompt. `-` if no session. |
+| STATUS | Single highest-priority state from the table below. |
+| ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). `-` if no session. |
+| TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. `-` if no session. |
 | REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
 | AGE | When the worktree was created. |
 
-`-` in any column means the value is unavailable. A worktree with no session
-shows `-` for STATUS, ACTIVITY, TOKENS, and TITLE. Attaching to such a worktree
-creates a session on first prompt; subsequent listings show its status and title.
+Status values, in priority order (highest wins). Statuses marked `*` are
+removed by `wt rm`.
+
+| Status | Meaning |
+|--------|---------|
+| `attached` | TUI client connected |
+| `working` | Agent generating, no client |
+| `dirty` | Uncommitted changes in working tree |
+| `merged *` | Changes incorporated into `origin/<default>` |
+| `committed` | Unique commits not in `origin/<default>` |
+| `idle` | Session exists, no unique commits, recent |
+| `stale *` | Session inactive >12 hours, no unique commits |
+| `empty *` | No session was ever created |
+
+Session states (`attached`, `working`) take priority — the worktree is in active
+use. Git states (`dirty`, `merged`, `committed`) take priority next — they
+describe the safety of the work. Session lifecycle states (`idle`, `stale`,
+`empty`) apply when the working tree is clean and the branch has no unique
+commits. Attachment is detected by scanning local `opencode attach` processes.
 
 ## Reconnection
 
@@ -295,3 +305,7 @@ long-lived tunnel amortizes the cost across all `wt` commands.
 **Remote TUI over SSH** — Running the TUI on the remote host and forwarding the
 terminal adds latency to every keystroke and breaks the local-client model where
 `opencode attach` runs on the laptop.
+
+**`wt rm --dry-run`** — `wt ls` already shows the unified status that determines
+what `wt rm` will remove. A separate preview command duplicates information the
+user can read from `ls`.

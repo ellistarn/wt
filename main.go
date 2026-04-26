@@ -221,46 +221,34 @@ func findWorktree(name string) (worktree.Entry, bool) {
 // cmdLs handles: wt ls
 func cmdLs(remoteOnly bool) {
 	all, enrichErr := discoverAll(remoteOnly)
+	if enrichErr != nil {
+		die("%v", enrichErr)
+	}
 	worktree.Sort(all)
 
 	if len(all) == 0 {
 		fmt.Println("No worktrees found.")
 		return
 	}
-	if enrichErr != nil {
-		die("%v", enrichErr)
-	}
 	rows := make([]display.Row, len(all))
 	for i, e := range all {
 		rows[i] = display.Row{
 			Entry:  e,
-			Status: display.FormatStatus(e.Status, e.Attached),
+			Status: classifyStatus(e),
 		}
 	}
 	display.PrintTable(rows)
 }
 
-// cmdRm handles: wt rm [name] [--dry-run]
+// cmdRm handles: wt rm [name]
 func cmdRm(args []string, remoteOnly bool) {
-	var name string
-	dryRun := false
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--dry-run":
-			dryRun = true
-		default:
-			if name != "" {
-				die("unexpected argument: %s", args[i])
-			}
-			name = args[i]
-		}
+	if len(args) > 1 {
+		die("unexpected argument: %s", args[1])
 	}
-
-	if name != "" {
-		cmdRmTargeted(name, dryRun)
+	if len(args) == 1 {
+		cmdRmTargeted(args[0])
 	} else {
-		cmdRmBatch(remoteOnly, dryRun)
+		cmdRmBatch(remoteOnly)
 	}
 }
 
@@ -352,43 +340,46 @@ func fetchRepos(entries []worktree.Entry) {
 	}
 }
 
-// classifyForRm determines the action (remove/keep) and reason for a worktree.
-func classifyForRm(e worktree.Entry) (action, reason string) {
-	host := hostFor(e)
+// classifyStatus returns the single highest-priority status for a worktree.
+// Priority: attached > working > dirty > merged > committed > idle > stale > empty.
+func classifyStatus(e worktree.Entry) string {
+	// Session states — active use takes priority
+	if e.Attached {
+		return "attached"
+	}
+	if e.Status == "working" {
+		return "working"
+	}
 
-	// Data safety — keep worktrees with at-risk changes
-	var keepReasons []string
+	// Git states — data safety
+	host := hostFor(e)
 	if !git.IsClean(host, e.Dir) {
-		keepReasons = append(keepReasons, "dirty")
+		return "dirty"
 	}
 	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	var merged bool
 	if unique > 0 {
-		merged = git.IsMerged(host, e.Repo, e.Name)
-	}
-	if unique > 0 && !merged {
-		keepReasons = append(keepReasons, "committed")
-	}
-	if len(keepReasons) > 0 {
-		return "keep", strings.Join(keepReasons, ", ")
+		if git.IsMerged(host, e.Repo, e.Name) {
+			return "merged"
+		}
+		return "committed"
 	}
 
-	// Safe to remove — determine why
+	// Session lifecycle — no unique commits, clean tree
 	if e.SessionID == "" {
-		return "remove", "empty"
+		return "empty"
 	}
-	if merged {
-		return "remove", "merged"
+	if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
+		return "stale"
 	}
-	if unique == 0 && !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
-		return "remove", "stale"
-	}
-
-	// Not done — session exists, no commits yet
-	return "keep", e.Status
+	return "idle"
 }
 
-func cmdRmBatch(remoteOnly bool, dryRun bool) {
+// isRemovable returns true if a status indicates the worktree is safe to remove.
+func isRemovable(status string) bool {
+	return status == "merged" || status == "stale" || status == "empty"
+}
+
+func cmdRmBatch(remoteOnly bool) {
 	all, enrichErr := discoverAll(remoteOnly)
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
@@ -399,45 +390,37 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 		return
 	}
 
-	type classified struct {
+	type result struct {
 		entry  worktree.Entry
-		action string
-		reason string
+		status string
 		errMsg string
 	}
-	var results []classified
+	var results []result
 	var removeCount int
 
 	for _, e := range all {
-		action, reason := classifyForRm(e)
-
-		// Actually remove if not dry-run
+		status := classifyStatus(e)
 		var errMsg string
-		if action == "remove" && !dryRun {
+
+		if isRemovable(status) {
 			host := hostFor(e)
 			if err := git.WorktreeRemove(host, e.Repo, e.Name); err != nil {
-				action = "keep"
-				reason = "error"
 				errMsg = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
 			} else {
-				action = "removed"
+				status = "removed"
+				removeCount++
 			}
 		}
 
-		if action == "remove" || action == "removed" {
-			removeCount++
-		}
-		results = append(results, classified{e, action, reason, errMsg})
+		results = append(results, result{e, status, errMsg})
 	}
 
-	// Sort: removes first, then keeps; by activity (newest first) within each group
-	isRemove := func(action string) bool { return action == "remove" || action == "removed" }
+	// Sort: removed first, then by activity (newest first)
 	sort.SliceStable(results, func(i, j int) bool {
-		ri, rj := isRemove(results[i].action), isRemove(results[j].action)
+		ri, rj := results[i].status == "removed", results[j].status == "removed"
 		if ri != rj {
 			return ri
 		}
-		// Within same group, sort by activity (newest first)
 		ti, tj := results[i].entry.UpdatedAt, results[j].entry.UpdatedAt
 		if !ti.IsZero() && !tj.IsZero() {
 			return ti.After(tj)
@@ -445,17 +428,14 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 		if !ti.IsZero() {
 			return true
 		}
-		if !tj.IsZero() {
-			return false
-		}
-		return false
+		return !tj.IsZero() && false
 	})
 
 	rows := make([]display.Row, len(results))
 	for i, r := range results {
 		rows[i] = display.Row{
 			Entry:  r.entry,
-			Status: fmt.Sprintf("%s (%s)", r.action, r.reason),
+			Status: r.status,
 		}
 	}
 	display.PrintTable(rows)
@@ -472,22 +452,18 @@ func cmdRmBatch(remoteOnly bool, dryRun bool) {
 	}
 }
 
-func cmdRmTargeted(name string, dryRun bool) {
+func cmdRmTargeted(name string) {
 	entry, ok := findWorktree(name)
 	if !ok {
 		die("worktree %q not found", name)
 	}
 	host := hostFor(entry)
-	status := "remove"
-	if !dryRun {
-		if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
-			die("%v", err)
-		}
-		status = "removed"
+	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
+		die("%v", err)
 	}
 	display.PrintTable([]display.Row{{
 		Entry:  entry,
-		Status: status,
+		Status: "removed",
 	}})
 }
 
@@ -501,9 +477,18 @@ Usage:
   wt -r <path>              Create a new remote worktree and attach
   wt ls                     List all worktrees (local and remote)
   wt -r ls                  List remote worktrees only
-  wt rm                     Remove all safe-to-remove worktrees
-  wt rm --dry-run           Preview what would be removed
+  wt rm                     Remove worktrees marked * in wt ls
   wt rm <name>              Remove a specific worktree
+
+Status:
+  attached    TUI client connected
+  working     Agent generating
+  dirty       Uncommitted changes in working tree
+  merged *    Changes incorporated into default branch
+  committed   Unique commits not yet in default branch
+  idle        Session exists, no unique commits
+  stale *     Session inactive >12 hours, no unique commits
+  empty *     No session was ever created
 
 Flags:
   -r, --remote              Operate on the remote dev desktop
@@ -526,7 +511,7 @@ func printExitRow(serverURL string, entry worktree.Entry) {
 	entry = entries[0]
 	display.PrintTable([]display.Row{{
 		Entry:  entry,
-		Status: display.FormatStatus(entry.Status, entry.Attached),
+		Status: classifyStatus(entry),
 	}})
 }
 

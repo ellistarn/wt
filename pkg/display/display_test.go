@@ -10,26 +10,6 @@ import (
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-func TestFormatStatus(t *testing.T) {
-	tests := []struct {
-		status   string
-		attached bool
-		want     string
-	}{
-		{"", false, "-"},
-		{"idle", false, "idle"},
-		{"working", false, "working"},
-		{"idle", true, "attached"},
-		{"working", true, "attached"},
-	}
-	for _, tt := range tests {
-		got := FormatStatus(tt.status, tt.attached)
-		if got != tt.want {
-			t.Errorf("FormatStatus(%q, %v) = %q, want %q", tt.status, tt.attached, got, tt.want)
-		}
-	}
-}
-
 func TestFormatTokens(t *testing.T) {
 	tests := []struct {
 		tokens int
@@ -121,7 +101,7 @@ func TestPrintTable(t *testing.T) {
 				Repo:      "/home/user/src/github.com/acme/project",
 				CreatedAt: now.Add(-1 * time.Hour),
 			},
-			Status: "-",
+			Status: "empty",
 		},
 	}
 
@@ -169,8 +149,11 @@ func TestPrintTable(t *testing.T) {
 		t.Errorf("expected title in row 1: %s", lines[1])
 	}
 
-	// Second row: no session, dashes everywhere.
+	// Second row: empty status with * marker.
 	if !strings.Contains(lines[2], "0424T1035-627") {
 		t.Errorf("expected worktree name in row 2: %s", lines[2])
+	}
+	if !strings.Contains(lines[2], "empty *") {
+		t.Errorf("expected 'empty *' in row 2: %s", lines[2])
 	}
 }
