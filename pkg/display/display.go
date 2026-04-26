@@ -3,6 +3,7 @@ package display
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -33,7 +34,7 @@ func PrintTable(rows []Row) {
 		fmt.Println()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tREPO\tHOST\tTOKENS\tACTIVITY\tAGE\n")
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tURI\tTOKENS\tACTIVITY\tAGE\n")
 
 	now := time.Now()
 	for _, r := range rows {
@@ -48,13 +49,9 @@ func PrintTable(rows []Row) {
 		if title == "" {
 			title = "-"
 		}
-		repo := formatRepo(e.Repo)
-		host := e.Host
-		if host == "" {
-			host = "-"
-		}
+		uri := formatURI(e.Host, e.Repo)
 		age := formatDuration(e.CreatedAt, now)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, repo, host, tokens, activity, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, uri, tokens, activity, age)
 	}
 
 	w.Flush()
@@ -119,6 +116,29 @@ func formatRepo(repo string) string {
 		return "~/.../" + tail
 	}
 	return repo
+}
+
+// formatURI combines host and repo into a single host:port/path string.
+func formatURI(host, repo string) string {
+	if host == "" {
+		host = "localhost"
+	}
+	path := formatRepo(repo)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return fmt.Sprintf("%s:%d%s", host, serverPort(), path)
+}
+
+// serverPort returns the OpenCode server port (default 5096, overridden by WT_OPENCODE_PORT).
+// This duplicates opencode.ServerPort() to avoid an import cycle (opencode → display).
+func serverPort() int {
+	if s := os.Getenv("WT_OPENCODE_PORT"); s != "" {
+		if p, err := strconv.Atoi(s); err == nil {
+			return p
+		}
+	}
+	return 5096
 }
 
 func FormatAge(t time.Time, now time.Time) string {
