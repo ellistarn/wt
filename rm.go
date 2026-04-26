@@ -66,7 +66,7 @@ func isRemovable(status string) bool {
 }
 
 func cmdRmBatch(remoteOnly bool) {
-	all, fetched, enrichErr := discoverAll(remoteOnly)
+	all, fetched, enrichErr := discoverAll(remoteOnly, false)
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
 	}

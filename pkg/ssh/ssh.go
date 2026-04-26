@@ -84,6 +84,7 @@ func EnsureTunnel(host string, localPort, remotePort int) error {
 		return nil
 	}
 	cmd := exec.Command("ssh", "-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
+	fmt.Fprintf(os.Stderr, "ssh -fNL %d:localhost:%d %s\n", localPort, remotePort, host)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Another process may have started the tunnel between our health
 		// check and this SSH invocation (race on "address already in use").
@@ -95,7 +96,6 @@ func EnsureTunnel(host string, localPort, remotePort int) error {
 	// Wait for the tunnel to accept connections.
 	for i := 0; i < 20; i++ {
 		if tunnelHealthy(localPort) {
-			fmt.Fprintf(os.Stderr, "started SSH tunnel to %s (localhost:%d)\n", host, localPort)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
