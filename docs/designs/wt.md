@@ -181,6 +181,16 @@ All read paths (ls, rm) fetch from origin to ensure remote-tracking refs are
 current. Removal deletes the worktree
 directory and the branch. Session history in the database is not touched.
 
+### `wt diff <name>`
+
+Show the changes on a worktree's branch. Computes the merge-base with
+`origin/<default>` and diffs against it, capturing both committed and
+uncommitted changes.
+
+Output: `--stat` summary printed directly (stays in scrollback), then the full
+diff piped through `less -R` when stdout is a terminal. When piped (e.g., to an
+LLM or file), the full diff is printed directly with no color and no pager.
+
 ### `wt ls`
 
 List all worktrees with their status. Local worktrees (all repos under `$HOME`)

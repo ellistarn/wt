@@ -43,6 +43,10 @@ func main() {
 		cmdRm(remaining[1:], remote)
 		return
 	}
+	if len(remaining) > 0 && remaining[0] == "diff" {
+		cmdDiff(remaining[1:])
+		return
+	}
 
 	if remote {
 		cmdRemote(remaining)
@@ -198,6 +202,61 @@ func cmdLs(remoteOnly bool) {
 	display.PrintTable(rows)
 }
 
+// cmdDiff handles: wt diff <name>
+func cmdDiff(args []string) {
+	if len(args) == 0 {
+		die("usage: wt diff <name>")
+	}
+	name := args[0]
+	entry, ok := findWorktree(name)
+	if !ok {
+		die("worktree %q not found", name)
+	}
+	host := hostFor(entry)
+
+	stat, err := git.DiffStat(host, entry.Dir)
+	if err != nil {
+		die("diff: %v", err)
+	}
+	if stat == "" {
+		fmt.Println("No changes on this branch.")
+		return
+	}
+	fmt.Println(stat)
+
+	isTTY := isTerminal()
+	full, err := git.Diff(host, entry.Dir, isTTY)
+	if err != nil {
+		die("diff: %v", err)
+	}
+	if isTTY {
+		page(full)
+	} else {
+		fmt.Print(full)
+	}
+}
+
+// isTerminal reports whether stdout is connected to a terminal.
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// page displays content through less -R, preserving ANSI color codes.
+// Falls back to direct output if the pager is unavailable.
+func page(content string) {
+	cmd := exec.Command("less", "-R")
+	cmd.Stdin = strings.NewReader(content)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Print(content)
+	}
+}
+
 func printUsage() {
 	usage := strings.TrimSpace(`
 wt — worktree session manager
@@ -208,6 +267,7 @@ Usage:
   wt -r <path>              Create a new remote worktree and attach
   wt ls                     List all worktrees (local and remote)
   wt -r ls                  List remote worktrees only
+  wt diff <name>            Show changes on a worktree's branch
   wt rm                     Remove worktrees marked * in wt ls
   wt rm <name>              Remove a specific worktree
 
