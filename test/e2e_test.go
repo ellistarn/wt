@@ -150,6 +150,23 @@ func (e *testEnv) createSession(dir string) {
 	e.sessionMu.Unlock()
 }
 
+func (e *testEnv) createIdleSession(dir string) {
+	e.t.Helper()
+	now := time.Now()
+	idle := now.Add(-1 * time.Hour)
+	e.sessionMu.Lock()
+	e.sessions = append(e.sessions, mockSession{
+		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
+		Directory: dir,
+		Title:     "Test instruction compliance",
+		Time: struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		}{Created: idle.UnixMilli(), Updated: idle.UnixMilli()},
+	})
+	e.sessionMu.Unlock()
+}
+
 func (e *testEnv) startMockServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
@@ -160,12 +177,6 @@ func (e *testEnv) startMockServer() {
 		sessions := make([]mockSession, len(e.sessions))
 		copy(sessions, e.sessions)
 		e.sessionMu.Unlock()
-
-		// Update timestamps to keep sessions "fresh" (within 30s = working)
-		now := time.Now().UnixMilli()
-		for i := range sessions {
-			sessions[i].Time.Updated = now
-		}
 
 		dir := r.URL.Query().Get("directory")
 		if dir != "" {
@@ -324,74 +335,68 @@ func TestTargetedRm_PushedUnmerged(t *testing.T) {
 	}
 }
 
-// --- Batch tests (dry-run only to avoid touching real worktrees) ---
+// --- Batch tests ---
 
-func TestBatchRm_DryRun(t *testing.T) {
+func TestLs_UnifiedStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Would remove: clean, no session
+	// empty *: clean, no session
 	env.addWorktree("batch-clean")
 
-	// Would remove: merged
+	// empty *: regular merge (commits become ancestors of main → unique=0, no session)
 	wt2 := env.addWorktree("batch-merged")
 	env.commitFile(wt2, "f.txt", "done", "feature")
 	env.push("batch-merged")
 	env.mergeToMain("batch-merged")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Would remove: squash-merged (with session, so classified as "merged" not "empty")
+	// merged *: squash-merged (unique>0 but merge-tree detects content in main)
+	// Uses idle session so "working" doesn't take priority over "merged".
 	wt5 := env.addWorktree("batch-squashed")
 	env.commitFile(wt5, "g.txt", "squashed", "squash feature")
 	env.push("batch-squashed")
-	env.createSession(wt5)
+	env.createIdleSession(wt5)
 	env.squashMergeToMain("batch-squashed")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Skipped: dirty
+	// dirty: uncommitted changes
 	wt3 := env.addWorktree("batch-dirty")
 	os.WriteFile(filepath.Join(wt3, "f.txt"), []byte("x"), 0644)
 
-	// Skipped: unpushed
+	// committed: unpushed commits
 	wt4 := env.addWorktree("batch-unpushed")
 	env.commitFile(wt4, "a.txt", "a", "local")
 
-	out := env.wt("rm", "--dry-run")
+	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
 	assertContains(t, out, "batch-clean")
 	assertContains(t, out, "batch-merged")
 	assertContains(t, out, "batch-squashed")
-	assertContains(t, out, "remove (")
+	assertContains(t, out, "empty *")
 
-	// Squash-merged branch has a session and unique commits, but merge-tree
+	// Squash-merged branch has an idle session and unique commits, but merge-tree
 	// detection recognizes its changes are in main — classified as "merged".
-	// Without squash detection it would be "keep (committed)".
-	if !strings.Contains(out, "batch-squashed") || !strings.Contains(out, "remove (merged)") {
-		t.Error("squash-merged worktree should be classified as remove (merged)")
+	// Without squash detection it would be "committed".
+	if !strings.Contains(out, "batch-squashed") || !strings.Contains(out, "merged *") {
+		t.Error("squash-merged worktree should be classified as merged *")
 	}
 
 	assertContains(t, out, "batch-dirty")
-	assertContains(t, out, "keep (dirty")
+	assertContains(t, out, "dirty")
 	assertContains(t, out, "batch-unpushed")
-	assertContains(t, out, "keep (committed")
-
-	// Nothing actually removed
-	for _, name := range []string{"batch-clean", "batch-merged", "batch-squashed", "batch-dirty", "batch-unpushed"} {
-		if !env.worktreeExists(name) {
-			t.Errorf("worktree %q removed during dry-run", name)
-		}
-	}
+	assertContains(t, out, "committed")
 }
 
-// TestBatchRm_RegressionPrunedTrackingRef verifies that squash merge detection
+// TestLs_RegressionPrunedTrackingRef verifies that squash merge detection
 // works even when the remote tracking ref (refs/remotes/origin/<branch>) has
 // been pruned. Previously IsMerged gated on the tracking ref existing, so
 // fetch.prune=true would cause merged branches to be classified as "committed".
-func TestBatchRm_RegressionPrunedTrackingRef(t *testing.T) {
+func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -402,22 +407,22 @@ func TestBatchRm_RegressionPrunedTrackingRef(t *testing.T) {
 	wt := env.addWorktree("pruned-ref")
 	env.commitFile(wt, "h.txt", "pruned", "pruned feature")
 	env.push("pruned-ref")
-	env.createSession(wt)
+	env.createIdleSession(wt)
 	env.squashMergeToMain("pruned-ref")
 	gitCmd(t, env.repo, "checkout", "main")
 
 	// Simulate fetch.prune=true deleting the tracking ref
 	gitCmd(t, env.repo, "update-ref", "-d", "refs/remotes/origin/pruned-ref")
 
-	out := env.wt("rm", "--dry-run")
+	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
-	if !strings.Contains(out, "pruned-ref") || !strings.Contains(out, "remove (merged)") {
-		t.Error("squash-merged worktree with pruned tracking ref should be classified as remove (merged)")
+	if !strings.Contains(out, "pruned-ref") || !strings.Contains(out, "merged *") {
+		t.Error("squash-merged worktree with pruned tracking ref should be classified as merged *")
 	}
 }
 
-func TestBatchRm_SessionActiveSkipped(t *testing.T) {
+func TestLs_SessionActiveStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -426,12 +431,40 @@ func TestBatchRm_SessionActiveSkipped(t *testing.T) {
 	wt := env.addWorktree("batch-active")
 	env.createSession(wt)
 
-	out := env.wt("rm", "--dry-run")
+	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
-	// Session is recent with no commits — kept as working
+	// Session is recent with no commits — shown as working
 	assertContains(t, out, "batch-active")
-	assertContains(t, out, "keep (working)")
+	assertContains(t, out, "working")
+}
+
+func TestBatchRm(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// empty * → removed
+	env.addWorktree("rm-empty")
+
+	// dirty → kept
+	wt2 := env.addWorktree("rm-dirty")
+	os.WriteFile(filepath.Join(wt2, "f.txt"), []byte("x"), 0644)
+
+	out := env.wt("rm")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "rm-empty")
+	assertContains(t, out, "removed")
+
+	if !env.worktreeExists("rm-dirty") {
+		t.Error("dirty worktree should not be removed")
+	}
+	if env.worktreeExists("rm-empty") {
+		t.Error("empty worktree should have been removed")
+	}
 }
 
 // --- Remote host configuration tests ---

@@ -131,39 +131,42 @@ func sshRunErr(host, script string) (string, error) {
 
 // --- SSH path tests ---
 
-func TestSSH_BatchRm_DryRun(t *testing.T) {
+func TestSSH_Ls_UnifiedStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping SSH e2e test in short mode")
 	}
 	env := newSSHTestEnv(t)
 
-	// Clean, no session → should be removed
+	// Clean, no session → empty *
 	env.addWorktree("ssh-clean")
 
-	// Dirty → should be skipped
+	// Dirty → dirty
 	wt2 := env.addWorktree("ssh-dirty")
 	sshRun(t, env.host, fmt.Sprintf("echo dirty > %s/dirty.txt", wt2))
 
-	// Unpushed → should be skipped
+	// Unpushed → committed
 	wt3 := env.addWorktree("ssh-unpushed")
 	env.commitFile(wt3, "a.txt", "a", "unpushed")
 
-	// Pushed + merged → should be removed
+	// Pushed + merged (regular, not squash) with no session → empty *
+	// After a regular merge, the branch's commits are ancestors of main,
+	// so UniqueCommitCount is 0. With no session, status is "empty".
 	wt4 := env.addWorktree("ssh-merged")
 	env.commitFile(wt4, "f.txt", "f", "feature")
 	env.push("ssh-merged")
 	env.mergeToMain("ssh-merged")
 
-	out := env.wt("-r", "rm", "--dry-run")
-	t.Log("SSH dry-run output:\n" + out)
+	out := env.wt("-r", "ls")
+	t.Log("SSH ls output:\n" + out)
 
-	assertContains(t, out, "remove")
 	assertContains(t, out, "ssh-clean")
+	assertContains(t, out, "empty *")
 	assertContains(t, out, "ssh-merged")
 
-	assertContains(t, out, "keep")
 	assertContains(t, out, "ssh-dirty")
+	assertContains(t, out, "dirty")
 	assertContains(t, out, "ssh-unpushed")
+	assertContains(t, out, "committed")
 }
 
 func TestSSH_RemoteSessionQuery(t *testing.T) {

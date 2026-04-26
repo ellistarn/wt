@@ -11,13 +11,20 @@ import (
 )
 
 // Row is a single row in the worktree table. Callers provide the Entry and a
-// pre-formatted Status string (e.g. "working", "remove (stale)").
+// pre-formatted Status string (e.g. "working", "merged", "removed").
 type Row struct {
 	Entry  worktree.Entry
 	Status string
 }
 
-// PrintTable prints rows as an aligned table.
+// removableStatuses are cleaned up by `wt rm` and marked with * in listings.
+var removableStatuses = map[string]bool{
+	"merged": true,
+	"stale":  true,
+	"empty":  true,
+}
+
+// PrintTable prints rows as an aligned table. Removable statuses get a * suffix.
 func PrintTable(rows []Row) {
 	if len(rows) == 0 {
 		return
@@ -28,6 +35,10 @@ func PrintTable(rows []Row) {
 	now := time.Now()
 	for _, r := range rows {
 		e := r.Entry
+		status := r.Status
+		if removableStatuses[status] {
+			status += " *"
+		}
 		activity := formatActivity(e.UpdatedAt, now)
 		tokens := formatTokens(e.Tokens)
 		title := e.Title
@@ -36,21 +47,10 @@ func PrintTable(rows []Row) {
 		}
 		repo := formatRepo(e.Repo, e.Remote)
 		age := formatDuration(e.CreatedAt, now)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, r.Status, title, repo, tokens, activity, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, repo, tokens, activity, age)
 	}
 
 	w.Flush()
-}
-
-// FormatStatus returns the highest-priority session state: attached > working > idle > stale > -.
-func FormatStatus(status string, attached bool) string {
-	if status == "" {
-		return "-"
-	}
-	if attached {
-		return "attached"
-	}
-	return status
 }
 
 // formatActivity returns how long ago the session was active, or "now" if streaming.
