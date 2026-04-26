@@ -83,8 +83,8 @@ func TestPrintTable(t *testing.T) {
 	rows := []Row{
 		{
 			Entry: worktree.Entry{
-				Name:      "0424T0907-93511",
-				Dir:       "/home/user/src/github.com/acme/project/.worktrees/0424T0907-93511",
+				Name:      "a3f8c12",
+				Dir:       "/home/user/src/github.com/acme/project/.worktrees/a3f8c12",
 				Repo:      "/home/user/src/github.com/acme/project",
 				Status:    "idle",
 				Title:     "Fix auth handler",
@@ -96,8 +96,8 @@ func TestPrintTable(t *testing.T) {
 		},
 		{
 			Entry: worktree.Entry{
-				Name:      "0424T1035-627",
-				Dir:       "/home/user/src/github.com/acme/project/.worktrees/0424T1035-627",
+				Name:      "b7e2a09",
+				Dir:       "/home/user/src/github.com/acme/project/.worktrees/b7e2a09",
 				Repo:      "/home/user/src/github.com/acme/project",
 				CreatedAt: now.Add(-1 * time.Hour),
 			},
@@ -150,7 +150,7 @@ func TestPrintTable(t *testing.T) {
 	}
 
 	// Second row: empty status with * marker.
-	if !strings.Contains(lines[2], "0424T1035-627") {
+	if !strings.Contains(lines[2], "b7e2a09") {
 		t.Errorf("expected worktree name in row 2: %s", lines[2])
 	}
 	if !strings.Contains(lines[2], "empty *") {

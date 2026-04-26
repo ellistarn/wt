@@ -1,9 +1,26 @@
 package worktree
 
 import (
+	"regexp"
 	"testing"
 	"time"
 )
+
+func TestGenerateName(t *testing.T) {
+	hex7 := regexp.MustCompile(`^[0-9a-f]{7}$`)
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		name := GenerateName()
+		if !hex7.MatchString(name) {
+			t.Fatalf("GenerateName() = %q, want 7 lowercase hex chars", name)
+		}
+		seen[name] = true
+	}
+	// With 268M namespace, 1000 names should all be unique.
+	if len(seen) != 1000 {
+		t.Errorf("got %d unique names out of 1000, expected all unique", len(seen))
+	}
+}
 
 func TestSort_ActivityBeforeNoActivity(t *testing.T) {
 	now := time.Now()

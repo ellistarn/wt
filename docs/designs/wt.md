@@ -212,11 +212,11 @@ checking the working tree and branch against `origin/<default>`.
 
 ```
 WORKTREE            STATUS       TITLE                           REPO                              TOKENS  ACTIVITY  AGE
-0423T1430-12847     attached     Fix auth handler validation      [remote] /home/user/.../acme/api   150k    now       3h
-0423T1600-4419      committed    Refactor config parser           /Users/user/.../acme/api           42k     5m        1d
-0423T1700-8812      working      Migrate database schema          [remote] /home/user/.../acme/api   12k     now       2h
-0423T0900-2210      merged *     Add retry logic                  /Users/user/.../acme/api           80k     1h        2d
-0421T1100-5531      empty *      -                                [remote] /home/user/.../acme/web   -       -         2d
+a3f8c12     attached     Fix auth handler validation      [remote] /home/user/.../acme/api   150k    now       3h
+b7e2a09     committed    Refactor config parser           /Users/user/.../acme/api           42k     5m        1d
+c9a1f57     working      Migrate database schema          [remote] /home/user/.../acme/api   12k     now       2h
+d5b8e24     merged *     Add retry logic                  /Users/user/.../acme/api           80k     1h        2d
+e1d4b83     empty *      -                                [remote] /home/user/.../acme/web   -       -         2d
 ```
 
 Columns:
@@ -255,7 +255,7 @@ commits. Attachment is detected by scanning local `opencode attach` processes.
 
 1. Laptop opens.
 2. `wt ls` shows everything in flight (ensures the server and tunnel as needed).
-3. `wt 0423T1430-12847` resumes (works for both local and remote worktrees).
+3. `wt a3f8c12` resumes (works for both local and remote worktrees).
 
 ## Assumptions
 
