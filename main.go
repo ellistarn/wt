@@ -98,7 +98,7 @@ func cmdLocal(args []string) {
 		die("worktree %q not found", name)
 	}
 
-	// Pull the repo's default branch to keep it fresh for new worktrees
+	// Pull the repo's current branch to keep it fresh for new worktrees
 	// and merge detection. Best-effort — warn and continue on failure.
 	host := hostFor(entry)
 	if err := git.Pull(host, entry.Repo); err != nil {
@@ -291,8 +291,8 @@ Status:
   attached    TUI client connected
   working     Agent generating
   dirty       Uncommitted changes in working tree
-  merged *    Changes incorporated into default branch
-  committed   Unique commits not yet in default branch
+  merged *    Changes incorporated into upstream
+  committed   Unique commits not yet in upstream
   idle        Session exists, no unique commits
   stale *     Session inactive >4 hours, no unique commits
   empty *     No session was ever created

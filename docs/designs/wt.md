@@ -126,9 +126,11 @@ history, and reattaching resumes the session.
 Create or resume a worktree.
 
 - No args: pull the current branch to ensure the worktree starts from the
-  latest remote state. Create a new worktree. Attach. Pull again on exit so
-  the exit summary reflects the latest remote state.
-- With `name`: pull the repo's default branch (best-effort) to keep it fresh
+  latest remote state. Create a new worktree with its upstream tracking ref set
+  to `origin/<root-branch>`, where root-branch is whatever the repo root has
+  checked out. Attach. Pull again on exit so the exit summary reflects the
+  latest remote state.
+- With `name`: pull the repo's current branch (best-effort) to keep it fresh
   for future worktree creation and merge detection. Resume
   `<repo>/.worktrees/<name>`. Attach. Pull again on exit.
 
@@ -170,28 +172,31 @@ state from `wt ls`.
 landed, the session went dormant with no commits, or no session was ever
 created. All other statuses are kept. `wt ls` is the preview.
 
-Merge detection is three-phase: (1) ancestry check (`merge-base --is-ancestor`)
+Merge detection uses the branch's upstream tracking ref (set at creation time)
+as the target. Three-phase: (1) ancestry check (`merge-base --is-ancestor`)
 catches regular and fast-forward merges; (2) merge-tree simulation
 (`merge-tree --write-tree`, requires git 2.38+) catches squash merges when the
 branch merges cleanly; (3) patch-id comparison catches squash merges when
-merge-tree produces conflicts (e.g., main has moved forward and later commits
-touch the same files). Phase 3 computes the branch's aggregate diff patch-id
-and searches `origin/<default>` for a commit with a matching patch-id. This
+merge-tree produces conflicts (e.g., the upstream has moved forward and later
+commits touch the same files). Phase 3 computes the branch's aggregate diff
+patch-id and searches the upstream for a commit with a matching patch-id. This
 works for both single-commit and multi-commit squash merges.
 
 All commands pull from origin (`git pull --ff-only --prune`) to keep the
-default branch current for accurate merge detection and status classification.
-Pre-creation pulls hard-fail (stale default branch means the new worktree
-branches from the wrong place). All other pulls are best-effort — warn and
-continue. Removal deletes the worktree
-directory and the branch. Session history in the database is not touched.
+current branch fresh for accurate merge detection and status classification.
+Pre-creation pulls hard-fail (stale branch means the new worktree branches from
+the wrong place). All other pulls are best-effort — warn and continue. Removal
+deletes the worktree directory and the branch. Session history in the database
+is not touched.
 
 ### `wt diff <name>`
 
-Show the changes on a worktree's branch. Pulls the repo's default branch
+Show the changes on a worktree's branch. Pulls the repo's current branch
 (best-effort) so the diff is computed against the latest remote state. Computes
-the merge-base with `origin/<default>` and diffs against it, capturing both
-committed and uncommitted changes.
+the merge-base between the branch's upstream tracking ref and HEAD, then diffs
+against it, capturing both committed and uncommitted changes. The upstream is set
+at worktree creation time to `origin/<root-branch>` — the remote-tracking ref
+for whatever branch the repo root had checked out.
 
 Output: `--stat` summary printed directly (stays in scrollback), then the full
 diff piped through `less -R` when stdout is a terminal. When piped (e.g., to an
@@ -224,7 +229,7 @@ reliable way to distinguish a long-running response from a crash orphan.
 crashed session) is preferable to a false negative (hiding active work).
 
 Git state is determined per worktree (parallel, bounded to 8 concurrent) by
-checking the working tree and branch against `origin/<default>`.
+checking the working tree and branch against its upstream tracking ref.
 
 ```
 WORKTREE            STATUS       TITLE                           REPO                              TOKENS  ACTIVITY  AGE
@@ -255,8 +260,8 @@ removed by `wt rm`.
 | `attached` | TUI client connected |
 | `working` | Agent streaming (last assistant message incomplete) |
 | `dirty` | Uncommitted changes in working tree |
-| `merged *` | Changes incorporated into `origin/<default>` |
-| `committed` | Unique commits not in `origin/<default>` |
+| `merged *` | Changes incorporated into upstream |
+| `committed` | Unique commits not in upstream |
 | `idle` | Session exists, no unique commits, recent |
 | `stale *` | Session inactive >4 hours, no unique commits |
 | `empty *` | No session was ever created |
@@ -275,8 +280,9 @@ commits. Attachment is detected by scanning local `opencode attach` processes.
 
 ## Assumptions
 
-- The repo root checkout is on the default branch and clean. Worktree creation
-  pulls this branch, so conflicts or uncommitted changes would cause a failure.
+- The repo root checkout is clean. Worktree creation pulls the current branch,
+  so conflicts or uncommitted changes would cause a failure. The checked-out
+  branch determines the upstream for new worktrees.
 - The remote host is reachable via SSH.
 - `opencode` is available on PATH (locally and on the remote host).
 
