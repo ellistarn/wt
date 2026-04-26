@@ -89,19 +89,18 @@ func TestFormatURI(t *testing.T) {
 		{"", "/short/path", "localhost:5096/short/path"},
 	}
 	for _, tt := range tests {
-		got := formatURI(tt.host, tt.repo)
+		got := formatURI(tt.host, tt.repo, 5096)
 		if got != tt.want {
-			t.Errorf("formatURI(%q, %q) = %q, want %q", tt.host, tt.repo, got, tt.want)
+			t.Errorf("formatURI(%q, %q, 5096) = %q, want %q", tt.host, tt.repo, got, tt.want)
 		}
 	}
 }
 
 func TestFormatURICustomPort(t *testing.T) {
-	t.Setenv("WT_OPENCODE_PORT", "9999")
-	got := formatURI("", "/short/path")
+	got := formatURI("", "/short/path", 9999)
 	want := "localhost:9999/short/path"
 	if got != want {
-		t.Errorf("formatURI with WT_OPENCODE_PORT=9999: got %q, want %q", got, want)
+		t.Errorf("formatURI with port 9999: got %q, want %q", got, want)
 	}
 }
 
@@ -140,7 +139,7 @@ func TestPrintTable(t *testing.T) {
 	old := os.Stdout
 	os.Stdout = w
 
-	PrintTable(rows)
+	PrintTable(rows, 5096)
 
 	w.Close()
 	os.Stdout = old

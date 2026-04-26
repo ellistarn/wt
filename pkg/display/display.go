@@ -3,11 +3,11 @@ package display
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/ellistarn/wt/pkg/cmdlog"
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
@@ -26,11 +26,12 @@ var removableStatuses = map[string]bool{
 }
 
 // PrintTable prints rows as an aligned table. Removable statuses get a * suffix.
-func PrintTable(rows []Row) {
+// serverPort is the OpenCode server port used to render the URI column.
+func PrintTable(rows []Row, serverPort int) {
 	if len(rows) == 0 {
 		return
 	}
-	if HasLogged() {
+	if cmdlog.HasLogged() {
 		fmt.Println()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
@@ -49,7 +50,7 @@ func PrintTable(rows []Row) {
 		if title == "" {
 			title = "-"
 		}
-		uri := formatURI(e.Host, e.Repo)
+		uri := formatURI(e.Host, e.Repo, serverPort)
 		age := formatDuration(e.CreatedAt, now)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, uri, tokens, activity, age)
 	}
@@ -119,7 +120,7 @@ func formatRepo(repo string) string {
 }
 
 // formatURI combines host and repo into a single host:port/path string.
-func formatURI(host, repo string) string {
+func formatURI(host, repo string, port int) string {
 	if host == "" {
 		host = "localhost"
 	}
@@ -127,18 +128,7 @@ func formatURI(host, repo string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	return fmt.Sprintf("%s:%d%s", host, serverPort(), path)
-}
-
-// serverPort returns the OpenCode server port (default 5096, overridden by WT_OPENCODE_PORT).
-// This duplicates opencode.ServerPort() to avoid an import cycle (opencode → display).
-func serverPort() int {
-	if s := os.Getenv("WT_OPENCODE_PORT"); s != "" {
-		if p, err := strconv.Atoi(s); err == nil {
-			return p
-		}
-	}
-	return 5096
+	return fmt.Sprintf("%s:%d%s", host, port, path)
 }
 
 func FormatAge(t time.Time, now time.Time) string {
@@ -161,4 +151,3 @@ func FormatAge(t time.Time, now time.Time) string {
 		return fmt.Sprintf("%dd ago", days)
 	}
 }
-
