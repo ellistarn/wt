@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -191,22 +190,7 @@ func cmdLs(remoteOnly bool) {
 		return
 	}
 
-	// Classify in parallel. Each entry waits for its repo's fetch to complete,
-	// so fast-fetching repos start classification while slow ones are still fetching.
-	statuses := make([]string, len(all))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-	for i, e := range all {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, entry worktree.Entry) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			fetched.Wait(entry)
-			statuses[idx] = classifyStatus(entry)
-		}(i, e)
-	}
-	wg.Wait()
+	statuses := classifyAll(all, fetched)
 
 	rows := make([]display.Row, len(all))
 	for i, e := range all {

@@ -22,11 +22,10 @@ func ListLocal() []worktree.Entry {
 
 	// Find .worktrees directories by walking with os.ReadDir, which uses
 	// the d_type field from readdir to check IsDir() without stat syscalls.
-	// The callback is thread-safe because the walk parallelizes at depth 0.
 	var repos []string
 	seen := make(map[string]bool)
 	var repoMu sync.Mutex
-	findWorktreeDirs(home, 0, 10, func(repo string) {
+	findWorktreeDirs(home, 10, 16, func(repo string) {
 		repoMu.Lock()
 		defer repoMu.Unlock()
 		if !seen[repo] {
@@ -63,10 +62,72 @@ func ListLocal() []worktree.Entry {
 //     directories (go/src/, github.com/org/) have low fan-out; only
 //     caches and artifact stores (Go module cache, node_modules) have
 //     hundreds of siblings.
-func findWorktreeDirs(dir string, depth, maxDepth int, fn func(repo string)) {
+//
+// A fixed pool of workers processes a directory queue so wall time scales
+// with tree depth rather than total directory count, without goroutine
+// explosion.
+func findWorktreeDirs(root string, maxDepth, workers int, fn func(repo string)) {
+	type item struct {
+		dir   string
+		depth int
+	}
+
+	var mu sync.Mutex
+	queue := []item{{root, 0}}
+	active := 0
+	wake := sync.NewCond(&mu)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			for {
+				mu.Lock()
+				for len(queue) == 0 && active > 0 {
+					wake.Wait()
+				}
+				if len(queue) == 0 {
+					mu.Unlock()
+					wake.Broadcast()
+					return
+				}
+				it := queue[0]
+				queue = queue[1:]
+				active++
+				mu.Unlock()
+
+				children := walkDir(it.dir, it.depth, fn)
+				if it.depth < maxDepth {
+					mu.Lock()
+					for _, name := range children {
+						queue = append(queue, item{filepath.Join(it.dir, name), it.depth + 1})
+					}
+					active--
+					mu.Unlock()
+					wake.Broadcast()
+				} else {
+					mu.Lock()
+					active--
+					mu.Unlock()
+					wake.Broadcast()
+				}
+			}
+		}()
+	}
+
+	// Wait for all workers to finish.
+	mu.Lock()
+	for active > 0 || len(queue) > 0 {
+		wake.Wait()
+	}
+	mu.Unlock()
+	wake.Broadcast()
+}
+
+// walkDir reads one directory and returns the child directory names to recurse
+// into after applying pruning rules. Found repos are reported via fn.
+func walkDir(dir string, depth int, fn func(repo string)) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return nil
 	}
 	hasGit := false
 	var children []string
@@ -89,30 +150,12 @@ func findWorktreeDirs(dir string, depth, maxDepth int, fn func(repo string)) {
 	}
 
 	if hasGit && depth > 0 {
-		return
+		return nil
 	}
 	if len(children) > 100 {
-		return
+		return nil
 	}
-	// Parallelize at the walk root — each top-level directory under $HOME
-	// gets its own goroutine so heavy subtrees don't block the rest.
-	if depth == 0 {
-		var wg sync.WaitGroup
-		for _, name := range children {
-			wg.Add(1)
-			go func(n string) {
-				defer wg.Done()
-				findWorktreeDirs(filepath.Join(dir, n), depth+1, maxDepth, fn)
-			}(name)
-		}
-		wg.Wait()
-		return
-	}
-	for _, name := range children {
-		if depth < maxDepth {
-			findWorktreeDirs(filepath.Join(dir, name), depth+1, maxDepth, fn)
-		}
-	}
+	return children
 }
 
 // listInRepo lists worktrees within a single local repo.

@@ -154,6 +154,109 @@ func IsMerged(host, repo, branch string) bool {
 	return mergeTree == targetTree
 }
 
+// ClassifyEntry holds the input for batch classification.
+type ClassifyEntry struct {
+	Dir    string // worktree directory
+	Repo   string // repo root
+	Branch string // branch name
+}
+
+// ClassifyResult holds the git classification for a single worktree.
+type ClassifyResult struct {
+	Clean  bool // no modified, staged, or untracked files
+	Unique int  // commits on branch not on origin/<default>
+	Merged bool // branch changes incorporated into origin/<default>
+}
+
+// ClassifyBatch classifies multiple remote worktrees in a single SSH call.
+// Replicates the logic of IsClean + UniqueCommitCount + IsMerged but runs
+// all git commands on the remote host in one round-trip.
+func ClassifyBatch(host string, entries []ClassifyEntry) []ClassifyResult {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Build heredoc with one entry per line: dir\trepo\tbranch
+	var heredoc strings.Builder
+	for _, e := range entries {
+		fmt.Fprintf(&heredoc, "%s\t%s\t%s\n", e.Dir, e.Repo, e.Branch)
+	}
+
+	script := `
+set -eu
+
+default_branch() {
+    repo="$1"
+    ref=$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) && { echo "${ref##*/}"; return; }
+    git -C "$repo" rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1 && { echo main; return; }
+    git -C "$repo" rev-parse --verify refs/remotes/origin/master >/dev/null 2>&1 && { echo master; return; }
+    echo main
+}
+
+# Cache default branch per repo
+declare -A def_cache
+
+while IFS=$'\t' read -r dir repo branch; do
+    [ -z "$dir" ] && continue
+
+    # IsClean
+    status=$(git -C "$dir" status --porcelain 2>/dev/null) || status=""
+    if [ -n "$status" ]; then
+        clean=false
+    else
+        clean=true
+    fi
+
+    # DefaultBranch (cached per repo)
+    if [ -z "${def_cache[$repo]+x}" ]; then
+        def_cache[$repo]=$(default_branch "$repo")
+    fi
+    def="${def_cache[$repo]}"
+
+    # UniqueCommitCount
+    unique=$(git -C "$repo" rev-list --count "origin/$def..$branch" 2>/dev/null) || unique=0
+
+    # IsMerged (only if unique > 0)
+    merged=false
+    if [ "$unique" -gt 0 ] 2>/dev/null; then
+        if git -C "$repo" merge-base --is-ancestor "$branch" "origin/$def" 2>/dev/null; then
+            merged=true
+        else
+            merge_tree=$(git -C "$repo" merge-tree --write-tree "origin/$def" "$branch" 2>/dev/null) || merge_tree=""
+            target_tree=$(git -C "$repo" rev-parse "origin/${def}^{tree}" 2>/dev/null) || target_tree=""
+            if [ -n "$merge_tree" ] && [ "$merge_tree" = "$target_tree" ]; then
+                merged=true
+            fi
+        fi
+    fi
+
+    printf '%s\t%s\t%s\n' "$clean" "$unique" "$merged"
+done << 'ENTRIES'
+` + heredoc.String() + `ENTRIES
+`
+	out, err := ssh.Run(host, script)
+	if err != nil {
+		// Fallback: return empty results (caller will get zero values)
+		return make([]ClassifyResult, len(entries))
+	}
+
+	results := make([]ClassifyResult, len(entries))
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i, line := range lines {
+		if i >= len(entries) {
+			break
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		results[i].Clean = parts[0] == "true"
+		results[i].Unique, _ = strconv.Atoi(parts[1])
+		results[i].Merged = parts[2] == "true"
+	}
+	return results
+}
+
 // IsClean returns true if the worktree has no modified, staged, or untracked files.
 func IsClean(host, dir string) bool {
 	out, err := runGit(host, dir, "status", "--porcelain")
