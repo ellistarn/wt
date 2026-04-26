@@ -40,17 +40,13 @@ func RepoRoot(host string, dir ...string) (string, error) {
 
 // WorktreeAdd creates a new worktree at <repo>/.worktrees/<name> on branch <name>.
 func WorktreeAdd(host, repo, name string) error {
-	if host == "" {
-		cmd := exec.Command("git", "worktree", "add", ".worktrees/"+name, "-b", name)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("%w: %s", err, out)
-		}
-		return nil
+	args := []string{"worktree", "add", ".worktrees/" + name, "-b", name}
+	out, err := runCapture(host, repo, args...)
+	if err != nil {
+		return err
 	}
-	script := fmt.Sprintf("cd '%s' && git worktree add '.worktrees/%s' -b '%s'", repo, name, name)
-	_, err := ssh.Run(host, script)
-	return err
+	logCmd(host, repo, out, args...)
+	return nil
 }
 
 // DirExists checks whether a directory exists, locally or over SSH.
@@ -166,22 +162,24 @@ func IsClean(host, dir string) bool {
 
 // Fetch updates remote tracking refs for a repo.
 func Fetch(host, repo string) {
-	runGit(host, repo, "fetch", "origin")
+	args := []string{"fetch", "origin"}
+	out, _ := runCapture(host, repo, args...)
+	if out != "" {
+		logCmd(host, repo, out, args...)
+	}
 }
 
 // Pull fetches with prune and fast-forwards the current branch. Used before
 // creating worktrees so they branch from the latest remote state. Uses
 // --ff-only to fail explicitly if the local branch has diverged.
 func Pull(host, repo string) error {
-	if host == "" {
-		cmd := exec.Command("git", "-C", repo, "pull", "--ff-only", "--prune")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("%w: %s", err, out)
-		}
-		return nil
+	args := []string{"pull", "--ff-only", "--prune"}
+	out, err := runCapture(host, repo, args...)
+	if err != nil {
+		return err
 	}
-	_, err := runGit(host, repo, "pull", "--ff-only", "--prune")
-	return err
+	logCmd(host, repo, out, args...)
+	return nil
 }
 
 // WorktreeRemove removes the worktree directory and deletes the branch.
@@ -189,9 +187,12 @@ func Pull(host, repo string) error {
 // (only if merged, safe delete).
 func WorktreeRemove(host, repo, name string) error {
 	wtPath := repo + "/.worktrees/" + name
-	if _, err := runGit(host, repo, "worktree", "remove", wtPath); err != nil {
+	args := []string{"worktree", "remove", wtPath}
+	out, err := runCapture(host, repo, args...)
+	if err != nil {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
+	logCmd(host, repo, out, args...)
 	// Best-effort branch delete. -d is safe (refuses unmerged branches).
 	// If it fails (branch doesn't exist, not merged), that's fine.
 	runGit(host, repo, "branch", "-d", name)
@@ -201,10 +202,41 @@ func WorktreeRemove(host, repo, name string) error {
 // WorktreeForceRemove removes the worktree and branch without safety checks.
 func WorktreeForceRemove(host, repo, name string) error {
 	wtPath := repo + "/.worktrees/" + name
-	if _, err := runGit(host, repo, "worktree", "remove", "--force", wtPath); err != nil {
+	args := []string{"worktree", "remove", "--force", wtPath}
+	out, err := runCapture(host, repo, args...)
+	if err != nil {
 		return fmt.Errorf("git worktree remove --force: %w", err)
 	}
+	logCmd(host, repo, out, args...)
 	// Force delete the branch regardless of merge status.
 	runGit(host, repo, "branch", "-D", name)
 	return nil
+}
+
+// runCapture runs a git command capturing combined stdout+stderr.
+// Used for side-effect commands where output indicates what changed.
+func runCapture(host, dir string, args ...string) (string, error) {
+	if host == "" {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		raw, err := cmd.CombinedOutput()
+		out := strings.TrimSpace(string(raw))
+		if err != nil {
+			return out, fmt.Errorf("%w: %s", err, out)
+		}
+		return out, nil
+	}
+	return runGit(host, dir, args...)
+}
+
+// logCmd prints a git command and its output to stderr.
+func logCmd(host, dir, output string, args ...string) {
+	cmd := "git -C " + dir + " " + strings.Join(args, " ")
+	if host != "" {
+		cmd = host + ": " + cmd
+	}
+	if output != "" {
+		fmt.Fprintf(os.Stderr, "%s\n%s\n", cmd, output)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s\n", cmd)
+	}
 }

@@ -55,7 +55,7 @@ func findWorktree(name string) (worktree.Entry, bool) {
 // returned so callers can gate classification on each repo's fetch completing.
 // Returns any enrichment error — callers that make safety decisions must
 // check this; callers that only display can ignore it.
-func discoverAll(remoteOnly bool) ([]worktree.Entry, fetchResult, error) {
+func discoverAll(remoteOnly, fetch bool) ([]worktree.Entry, fetchResult, error) {
 	host := os.Getenv("WT_REMOTE_HOST")
 
 	localCh := make(chan []worktree.Entry, 1)
@@ -102,7 +102,12 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, fetchResult, error) {
 	var wg sync.WaitGroup
 	var localErr, remoteErr error
 
-	fetched := startFetchRepos(all)
+	var fetched fetchResult
+	if fetch {
+		fetched = startFetchRepos(all)
+	} else {
+		fetched = make(fetchResult)
+	}
 
 	if !remoteOnly {
 		wg.Add(1)

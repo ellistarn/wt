@@ -43,6 +43,7 @@ func EnsureLocalServer() error {
 	}
 
 	cmd := exec.Command(binary, "serve", "--port", strconv.Itoa(port))
+	fmt.Fprintf(os.Stderr, "opencode serve --port %d\n", port)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err == nil {
@@ -63,7 +64,6 @@ func EnsureLocalServer() error {
 
 	for i := 0; i < 20; i++ {
 		if healthProbe(url) == nil {
-			fmt.Fprintf(os.Stderr, "started opencode server on port %d\n", port)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -83,6 +83,7 @@ func EnsureRemoteServer(host string) error {
 
 	port := ServerPort()
 	startCmd := fmt.Sprintf("$SHELL -ic 'nohup opencode serve --port %d </dev/null >/dev/null 2>&1 &'", port)
+	fmt.Fprintf(os.Stderr, "%s: opencode serve --port %d\n", host, port)
 	if _, err := ssh.Run(host, startCmd); err != nil {
 		// Race — someone else may have started it.
 		if healthProbe(tunnelURL) == nil {
@@ -93,7 +94,6 @@ func EnsureRemoteServer(host string) error {
 
 	for i := 0; i < 20; i++ {
 		if healthProbe(tunnelURL) == nil {
-			fmt.Fprintf(os.Stderr, "started remote opencode server via %s\n", host)
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -73,7 +73,6 @@ func cmdLocal(args []string) {
 		if err := git.WorktreeAdd("", repo, name); err != nil {
 			die("failed to create worktree: %v", err)
 		}
-		fmt.Fprintf(os.Stderr, "created worktree %s\n", name)
 		if err := attach(serverURL, wtDir, ""); err != nil {
 			die("%v", err)
 		}
@@ -159,7 +158,6 @@ func cmdRemote(args []string) {
 	if err := git.WorktreeAdd(host, repo, name); err != nil {
 		die("failed to create remote worktree: %v", err)
 	}
-	fmt.Fprintf(os.Stderr, "created worktree %s on %s\n", name, host)
 	if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
 		die("%v", err)
 	}
@@ -182,7 +180,7 @@ func cmdRemote(args []string) {
 
 // cmdLs handles: wt ls
 func cmdLs(remoteOnly bool) {
-	all, fetched, enrichErr := discoverAll(remoteOnly)
+	all, fetched, enrichErr := discoverAll(remoteOnly, true)
 	if enrichErr != nil {
 		die("%v", enrichErr)
 	}
