@@ -82,9 +82,9 @@ func TestFormatURI(t *testing.T) {
 		want string
 	}{
 		// Local worktree (empty host) gets localhost.
-		{"", "/home/user/src/github.com/acme/project", "localhost:5096~/.../github.com/acme/project"},
+		{"", "/home/user/src/github.com/acme/project", "localhost:5096/~/.../github.com/acme/project"},
 		// Remote worktree keeps the provided host.
-		{"devbox", "/home/user/src/github.com/acme/project", "devbox:5096~/.../github.com/acme/project"},
+		{"devbox", "/home/user/src/github.com/acme/project", "devbox:5096/~/.../github.com/acme/project"},
 		// Short repo path passes through unshortened.
 		{"", "/short/path", "localhost:5096/short/path"},
 	}

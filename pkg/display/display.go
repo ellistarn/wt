@@ -123,7 +123,11 @@ func formatURI(host, repo string) string {
 	if host == "" {
 		host = "localhost"
 	}
-	return fmt.Sprintf("%s:%d%s", host, serverPort(), formatRepo(repo))
+	path := formatRepo(repo)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return fmt.Sprintf("%s:%d%s", host, serverPort(), path)
 }
 
 // serverPort returns the OpenCode server port (default 5096, overridden by WT_OPENCODE_PORT).
