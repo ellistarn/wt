@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/ellistarn/wt/pkg/worktree"
 )
 
 func TestHealthCheck(t *testing.T) {
@@ -226,5 +229,72 @@ func TestFetchSessionStatus_NoMessages(t *testing.T) {
 	}
 	if got.streaming {
 		t.Error("streaming = true, want false (no messages)")
+	}
+}
+
+func TestWorktreeName(t *testing.T) {
+	tests := []struct {
+		dir  string
+		want string
+	}{
+		{"/home/user/repo/.worktrees/0425T1457-57407", "0425T1457-57407"},
+		{"/local/home/user/repo/.worktrees/0425T1457-57407", "0425T1457-57407"},
+		{"/home/user/repo", ""},
+		{"", ""},
+		{"/home/user/.worktrees/", ""},
+		{"/home/user/.worktrees/name/subdir", ""},
+	}
+	for _, tt := range tests {
+		if got := worktreeName(tt.dir); got != tt.want {
+			t.Errorf("worktreeName(%q) = %q, want %q", tt.dir, got, tt.want)
+		}
+	}
+}
+
+// TestEnrich_RegressionSymlinkPaths verifies that session enrichment matches
+// by worktree name, not full path. This broke when remote hosts had symlinked
+// home directories (e.g. /local/home/user vs /home/user) causing the session
+// directory to differ from the discovered worktree directory.
+func TestEnrich_RegressionSymlinkPaths(t *testing.T) {
+	sessions := []Session{
+		{
+			ID:        "sess-1",
+			Directory: "/local/home/user/repo/.worktrees/0425T1457-57407",
+			Title:     "fix auth bug",
+			Time: struct {
+				Created int64 `json:"created"`
+				Updated int64 `json:"updated"`
+			}{Updated: time.Now().UnixMilli()},
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/session", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(sessions)
+	})
+	mux.HandleFunc("/session/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]message{})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	entries := []worktree.Entry{
+		{
+			Name: "0425T1457-57407",
+			Dir:  "/home/user/repo/.worktrees/0425T1457-57407", // different path, same worktree name
+		},
+	}
+
+	if err := Enrich(srv.URL, entries); err != nil {
+		t.Fatalf("Enrich: %v", err)
+	}
+	if entries[0].SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want %q", entries[0].SessionID, "sess-1")
+	}
+	if entries[0].Title != "fix auth bug" {
+		t.Errorf("Title = %q, want %q", entries[0].Title, "fix auth bug")
 	}
 }
