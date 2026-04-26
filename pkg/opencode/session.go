@@ -14,7 +14,7 @@ import (
 
 // StaleThreshold is the duration after which a session with no recent activity
 // is considered stale.
-const StaleThreshold = 12 * time.Hour
+const StaleThreshold = 4 * time.Hour
 
 // Session is the API response type from the OpenCode server.
 type Session struct {
