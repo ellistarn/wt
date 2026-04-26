@@ -20,8 +20,14 @@ func Host() (string, error) {
 }
 
 // Run executes a command on the remote host via SSH, passing cmd via stdin to bash.
+// Uses ControlMaster to multiplex connections — the first call to a given host
+// pays the full TCP+auth cost; subsequent calls within ControlPersist reuse it.
 func Run(host, cmd string) (string, error) {
-	c := exec.Command("ssh", host, "bash")
+	c := exec.Command("ssh",
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=/tmp/wt-ssh-%r@%h:%p",
+		"-o", "ControlPersist=60",
+		host, "bash")
 	c.Stdin = strings.NewReader(cmd)
 	out, err := c.CombinedOutput()
 	if err != nil {

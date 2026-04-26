@@ -182,7 +182,7 @@ func cmdRemote(args []string) {
 
 // cmdLs handles: wt ls
 func cmdLs(remoteOnly bool) {
-	all, enrichErr := discoverAll(remoteOnly)
+	all, fetched, enrichErr := discoverAll(remoteOnly)
 	if enrichErr != nil {
 		die("%v", enrichErr)
 	}
@@ -193,7 +193,8 @@ func cmdLs(remoteOnly bool) {
 		return
 	}
 
-	// Classify in parallel
+	// Classify in parallel. Each entry waits for its repo's fetch to complete,
+	// so fast-fetching repos start classification while slow ones are still fetching.
 	statuses := make([]string, len(all))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
@@ -203,6 +204,7 @@ func cmdLs(remoteOnly bool) {
 		go func(idx int, entry worktree.Entry) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			fetched.Wait(entry)
 			statuses[idx] = classifyStatus(entry)
 		}(i, e)
 	}

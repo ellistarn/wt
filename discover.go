@@ -51,9 +51,11 @@ func findWorktree(name string) (worktree.Entry, bool) {
 }
 
 // discoverAll discovers worktrees and enriches them with session data.
+// Git fetch runs concurrently with enrichment; per-repo done channels are
+// returned so callers can gate classification on each repo's fetch completing.
 // Returns any enrichment error — callers that make safety decisions must
 // check this; callers that only display can ignore it.
-func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
+func discoverAll(remoteOnly bool) ([]worktree.Entry, fetchResult, error) {
 	host := os.Getenv("WT_REMOTE_HOST")
 
 	localCh := make(chan []worktree.Entry, 1)
@@ -94,17 +96,13 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 	localEntries := all[:len(local)]
 	remoteEntries := all[len(local):]
 
-	// Run git fetch, local session enrichment, and remote session enrichment
-	// concurrently. They touch different systems (git refs vs local HTTP vs
-	// remote HTTP) and write disjoint fields/slices on the entries.
+	// Run git fetch and session enrichment concurrently. Fetch is non-blocking —
+	// per-repo done channels are returned for callers to wait on per-entry,
+	// overlapping fetch with classification instead of serializing them.
 	var wg sync.WaitGroup
 	var localErr, remoteErr error
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		fetchRepos(all)
-	}()
+	fetched := startFetchRepos(all)
 
 	if !remoteOnly {
 		wg.Add(1)
@@ -134,7 +132,7 @@ func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
 
 	wg.Wait()
 
-	return all, errors.Join(localErr, remoteErr)
+	return all, fetched, errors.Join(localErr, remoteErr)
 }
 
 // hostFor returns the SSH host for an entry, or "" for local entries.
@@ -145,27 +143,37 @@ func hostFor(e worktree.Entry) string {
 	return ""
 }
 
-// fetchRepos runs git fetch once per unique repo to ensure remote-tracking
-// refs are current. Best-effort — fetch failures are ignored.
-func fetchRepos(entries []worktree.Entry) {
-	type key struct{ host, repo string }
-	seen := make(map[key]bool)
-	var repos []key
+// fetchResult holds per-repo done channels from a non-blocking fetch.
+// Wait blocks until the given entry's repo has been fetched.
+type fetchResult map[repoKey]<-chan struct{}
+
+func (f fetchResult) Wait(e worktree.Entry) {
+	if ch, ok := f[repoKey{hostFor(e), e.Repo}]; ok {
+		<-ch
+	}
+}
+
+type repoKey struct{ host, repo string }
+
+// startFetchRepos kicks off git fetch for each unique repo and returns
+// immediately. Each repo gets its own goroutine; the returned channels
+// close when each repo's fetch completes.
+func startFetchRepos(entries []worktree.Entry) fetchResult {
+	seen := make(map[repoKey]bool)
+	result := make(fetchResult)
 	for _, e := range entries {
-		k := key{hostFor(e), e.Repo}
-		if !seen[k] {
-			seen[k] = true
-			repos = append(repos, k)
+		k := repoKey{hostFor(e), e.Repo}
+		if seen[k] {
+			continue
 		}
-	}
-	var wg sync.WaitGroup
-	for _, k := range repos {
-		wg.Add(1)
-		go func(k key) {
-			defer wg.Done()
+		seen[k] = true
+		ch := make(chan struct{})
+		result[k] = ch
+		go func(k repoKey, ch chan struct{}) {
 			git.Fetch(k.host, k.repo)
-		}(k)
+			close(ch)
+		}(k, ch)
 	}
-	wg.Wait()
+	return result
 }
 

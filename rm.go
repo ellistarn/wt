@@ -66,7 +66,7 @@ func isRemovable(status string) bool {
 }
 
 func cmdRmBatch(remoteOnly bool) {
-	all, enrichErr := discoverAll(remoteOnly)
+	all, fetched, enrichErr := discoverAll(remoteOnly)
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
 	}
@@ -92,6 +92,7 @@ func cmdRmBatch(remoteOnly bool) {
 		go func(idx int, entry worktree.Entry) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			fetched.Wait(entry)
 			statuses[idx] = classifyStatus(entry)
 		}(i, e)
 	}
