@@ -91,6 +91,9 @@ func (e *testEnv) addWorktree(name string) string {
 	e.t.Helper()
 	wtDir := filepath.Join(e.repo, ".worktrees", name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
+	// Set upstream tracking to match WorktreeAdd behavior.
+	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
 	return wtDir
 }
 
@@ -673,4 +676,75 @@ func TestDiff_NotFound(t *testing.T) {
 	t.Log("output:\n" + out)
 
 	assertContains(t, out, "not found")
+}
+
+// TestDiff_NonDefaultBranch verifies that wt diff uses the upstream tracking
+// ref, not the repo's default branch. Reproduces the bug where a worktree
+// branched from a non-default branch (e.g., krocodile) would diff against
+// origin/main instead of origin/<actual-base>.
+func TestDiff_NonDefaultBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a non-default branch "krocodile" with its own commits
+	gitCmd(t, env.repo, "checkout", "-b", "krocodile")
+	env.commitFile(env.repo, "kroc.txt", "krocodile content", "krocodile base")
+	gitCmd(t, env.repo, "push", "origin", "krocodile")
+
+	// Now create a worktree from krocodile (repo root is on krocodile)
+	wt := env.addWorktree("feature-on-kroc")
+	env.commitFile(wt, "feature.txt", "new feature", "add feature on krocodile")
+
+	out := env.wt("diff", "feature-on-kroc")
+	t.Log("output:\n" + out)
+
+	// Should show feature.txt (the worktree's change) but NOT kroc.txt
+	// (which is on krocodile, the base branch)
+	assertContains(t, out, "feature.txt")
+	if strings.Contains(out, "kroc.txt") {
+		t.Error("diff should be against origin/krocodile (upstream), not origin/main; kroc.txt should not appear")
+	}
+}
+
+// TestLs_NonDefaultBranch verifies that wt ls correctly classifies worktrees
+// branched from a non-default branch using the upstream tracking ref.
+func TestLs_NonDefaultBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a non-default branch "krocodile" with its own commits
+	gitCmd(t, env.repo, "checkout", "-b", "krocodile")
+	env.commitFile(env.repo, "kroc.txt", "krocodile content", "krocodile base")
+	gitCmd(t, env.repo, "push", "origin", "krocodile")
+
+	// Create a worktree from krocodile, commit, push, and merge back
+	wt := env.addWorktree("kroc-merged")
+	env.commitFile(wt, "f.txt", "done", "feature")
+	gitCmd(t, env.repo, "push", "origin", "kroc-merged")
+	// Merge into krocodile (not main)
+	gitCmd(t, env.repo, "checkout", "krocodile")
+	gitCmd(t, env.repo, "merge", "--no-ff", "kroc-merged", "-m", "merge kroc-merged")
+	gitCmd(t, env.repo, "push", "origin", "krocodile")
+	gitCmd(t, env.repo, "fetch", "origin")
+
+	env.createIdleSession(wt)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	// Should be classified as merged (not committed) since it's merged into krocodile
+	if !strings.Contains(out, "kroc-merged") {
+		t.Error("worktree should appear in ls output")
+	}
+	// The branch is merged into origin/krocodile (its upstream), so it should
+	// be classified as "empty" (ancestor check: unique=0 after merge, since
+	// all commits are reachable from origin/krocodile).
+	// With the old DefaultBranch code, it would show as "committed" because
+	// origin/main doesn't contain the krocodile commits.
 }

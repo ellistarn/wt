@@ -59,7 +59,11 @@ func newSSHTestEnv(t *testing.T) *sshTestEnv {
 func (e *sshTestEnv) addWorktree(name string) string {
 	e.t.Helper()
 	wtDir := e.repo + "/.worktrees/" + name
-	sshRun(e.t, e.host, fmt.Sprintf("cd %s && git worktree add .worktrees/%s -b %s", e.repo, name, name))
+	sshRun(e.t, e.host, fmt.Sprintf(
+		"cd %s && git worktree add .worktrees/%s -b %s && "+
+			"root=$(git rev-parse --abbrev-ref HEAD) && "+
+			"git branch --set-upstream-to=origin/$root %s",
+		e.repo, name, name, name))
 	return wtDir
 }
 

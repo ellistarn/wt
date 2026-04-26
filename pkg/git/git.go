@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/ellistarn/wt/pkg/display"
 	"github.com/ellistarn/wt/pkg/ssh"
@@ -41,6 +40,8 @@ func RepoRoot(host string, dir ...string) (string, error) {
 }
 
 // WorktreeAdd creates a new worktree at <repo>/.worktrees/<name> on branch <name>.
+// Sets the new branch's upstream tracking ref to origin/<root-branch>, where
+// root-branch is whatever the repo root has checked out.
 func WorktreeAdd(host, repo, name string) error {
 	args := []string{"worktree", "add", ".worktrees/" + name, "-b", name}
 	out, err := runCapture(host, repo, args...)
@@ -48,6 +49,16 @@ func WorktreeAdd(host, repo, name string) error {
 		return err
 	}
 	logCmd(host, repo, out, args...)
+
+	// Determine the root branch (what the repo root has checked out)
+	rootBranch, err := runGit(host, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return fmt.Errorf("cannot determine root branch: %w", err)
+	}
+	// Set upstream so diff/ls know what to compare against
+	if _, err := runGit(host, repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name); err != nil {
+		return fmt.Errorf("cannot set upstream for %s: %w", name, err)
+	}
 	return nil
 }
 
@@ -77,44 +88,26 @@ func runGit(host, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// defaultBranchCache avoids redundant git calls for the same repo.
-// Key: "host\x00repo", Value: branch name string.
-var defaultBranchCache sync.Map
-
-// DefaultBranch returns the default branch name (e.g., "main" or "master")
-// by checking refs/remotes/origin/HEAD, then probing main and master.
-// Results are cached per (host, repo) for the lifetime of the process.
-func DefaultBranch(host, repo string) string {
-	cacheKey := host + "\x00" + repo
-	if v, ok := defaultBranchCache.Load(cacheKey); ok {
-		return v.(string)
+// UpstreamRef returns the upstream tracking ref for the given branch
+// (e.g., "origin/krocodile"). Returns an error if no upstream is configured.
+// Works from any directory in the repo (worktree or root).
+func UpstreamRef(host, dir, branch string) (string, error) {
+	out, err := runGit(host, dir, "for-each-ref", "--format=%(upstream:short)", "refs/heads/"+branch)
+	if err != nil || out == "" {
+		return "", fmt.Errorf("no upstream configured for branch %q\n\nSet it with: git branch --set-upstream-to=origin/<base> %s", branch, branch)
 	}
-	result := defaultBranchUncached(host, repo)
-	defaultBranchCache.Store(cacheKey, result)
-	return result
-}
-
-func defaultBranchUncached(host, repo string) string {
-	out, err := runGit(host, repo, "symbolic-ref", "refs/remotes/origin/HEAD")
-	if err == nil {
-		// refs/remotes/origin/main -> main
-		parts := strings.Split(out, "/")
-		return parts[len(parts)-1]
-	}
-	// Probe common names
-	for _, name := range []string{"main", "master"} {
-		if _, err := runGit(host, repo, "rev-parse", "--verify", "refs/remotes/origin/"+name); err == nil {
-			return name
-		}
-	}
-	return "main" // fallback
+	return out, nil
 }
 
 // UniqueCommitCount returns the number of commits on branch that are not on
-// origin/<default>. Returns 0 if the branch has not diverged.
+// its upstream tracking ref. Returns 0 if the branch has not diverged or has
+// no upstream configured.
 func UniqueCommitCount(host, repo, branch string) int {
-	def := DefaultBranch(host, repo)
-	out, err := runGit(host, repo, "rev-list", "--count", "origin/"+def+".."+branch)
+	upstream, err := UpstreamRef(host, repo, branch)
+	if err != nil {
+		return 0
+	}
+	out, err := runGit(host, repo, "rev-list", "--count", upstream+".."+branch)
 	if err != nil {
 		return 0
 	}
@@ -123,24 +116,27 @@ func UniqueCommitCount(host, repo, branch string) int {
 }
 
 // IsMerged returns true if the branch's changes are incorporated into
-// origin/<default> (regular merge, fast-forward, or squash merge).
+// its upstream tracking ref (regular merge, fast-forward, or squash merge).
 //
 // Detection is three-phase:
 //  1. Ancestry check — catches regular merges and fast-forward merges.
 //  2. Merge-tree simulation — catches squash merges when the branch merges
-//     cleanly into origin/<default>. Requires git 2.38+.
+//     cleanly into the upstream. Requires git 2.38+.
 //  3. Patch-id comparison — catches squash merges when merge-tree produces
-//     conflicts (e.g., when origin/<default> has moved forward significantly).
+//     conflicts (e.g., when the upstream has moved forward significantly).
 //     Computes the branch's aggregate diff patch-id and searches for a commit
-//     on origin/<default> with a matching patch-id. Works for single and
+//     on the upstream with a matching patch-id. Works for single and
 //     multi-commit squash merges.
 //
 // Callers should only invoke this when the branch has unique commits
 // (UniqueCommitCount > 0). A branch with no divergence trivially matches
 // the target tree and would produce a false positive.
 func IsMerged(host, repo, branch string) bool {
-	def := DefaultBranch(host, repo)
-	target := "origin/" + def
+	upstream, err := UpstreamRef(host, repo, branch)
+	if err != nil {
+		return false
+	}
+	target := upstream
 
 	// Phase 1: ancestry check (regular merge / fast-forward).
 	if _, err := runGit(host, repo, "merge-base", "--is-ancestor", branch, target); err == nil {
@@ -240,8 +236,8 @@ type ClassifyEntry struct {
 // ClassifyResult holds the git classification for a single worktree.
 type ClassifyResult struct {
 	Clean  bool // no modified, staged, or untracked files
-	Unique int  // commits on branch not on origin/<default>
-	Merged bool // branch changes incorporated into origin/<default>
+	Unique int  // commits on branch not on its upstream
+	Merged bool // branch changes incorporated into its upstream
 }
 
 // ClassifyBatch classifies multiple remote worktrees in a single SSH call.
@@ -262,17 +258,6 @@ func ClassifyBatch(host string, entries []ClassifyEntry) ([]ClassifyResult, erro
 	script := `
 set -eu
 
-default_branch() {
-    repo="$1"
-    ref=$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) && { echo "${ref##*/}"; return; }
-    git -C "$repo" rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1 && { echo main; return; }
-    git -C "$repo" rev-parse --verify refs/remotes/origin/master >/dev/null 2>&1 && { echo master; return; }
-    echo main
-}
-
-# Cache default branch per repo
-declare -A def_cache
-
 while IFS=$'\t' read -r dir repo branch; do
     [ -z "$dir" ] && continue
 
@@ -284,33 +269,34 @@ while IFS=$'\t' read -r dir repo branch; do
         clean=true
     fi
 
-    # DefaultBranch (cached per repo)
-    if [ -z "${def_cache[$repo]+x}" ]; then
-        def_cache[$repo]=$(default_branch "$repo")
+    # Get upstream tracking ref for this branch
+    upstream=$(git -C "$repo" for-each-ref --format='%(upstream:short)' "refs/heads/$branch" 2>/dev/null)
+    if [ -z "$upstream" ]; then
+        printf '%s\t%s\t%s\n' "$clean" "0" "false"
+        continue
     fi
-    def="${def_cache[$repo]}"
 
     # UniqueCommitCount
-    unique=$(git -C "$repo" rev-list --count "origin/$def..$branch" 2>/dev/null) || unique=0
+    unique=$(git -C "$repo" rev-list --count "$upstream..$branch" 2>/dev/null) || unique=0
 
     # IsMerged (only if unique > 0)
     merged=false
     if [ "$unique" -gt 0 ] 2>/dev/null; then
-        if git -C "$repo" merge-base --is-ancestor "$branch" "origin/$def" 2>/dev/null; then
+        if git -C "$repo" merge-base --is-ancestor "$branch" "$upstream" 2>/dev/null; then
             merged=true
         else
-            merge_tree=$(git -C "$repo" merge-tree --write-tree "origin/$def" "$branch" 2>/dev/null) || merge_tree=""
-            target_tree=$(git -C "$repo" rev-parse "origin/${def}^{tree}" 2>/dev/null) || target_tree=""
+            merge_tree=$(git -C "$repo" merge-tree --write-tree "$upstream" "$branch" 2>/dev/null) || merge_tree=""
+            target_tree=$(git -C "$repo" rev-parse "${upstream}^{tree}" 2>/dev/null) || target_tree=""
             if [ -n "$merge_tree" ] && [ "$merge_tree" = "$target_tree" ]; then
                 merged=true
             fi
             # Phase 3: patch-id comparison (squash merge, merge-tree had conflicts)
             if [ "$merged" = "false" ]; then
-                mb=$(git -C "$repo" merge-base "origin/$def" "$branch" 2>/dev/null) || mb=""
+                mb=$(git -C "$repo" merge-base "$upstream" "$branch" 2>/dev/null) || mb=""
                 if [ -n "$mb" ]; then
                     bpid=$(git -C "$repo" diff "$mb" "$branch" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')
                     if [ -n "$bpid" ]; then
-                        match=$(git -C "$repo" log -p --max-count=500 "$mb..origin/$def" 2>/dev/null | git patch-id --stable 2>/dev/null | awk -v pid="$bpid" '$1 == pid {print "yes"; exit}')
+                        match=$(git -C "$repo" log -p --max-count=500 "$mb..$upstream" 2>/dev/null | git patch-id --stable 2>/dev/null | awk -v pid="$bpid" '$1 == pid {print "yes"; exit}')
                         if [ "$match" = "yes" ]; then
                             merged=true
                         fi
@@ -347,18 +333,25 @@ done << 'ENTRIES'
 }
 
 // DiffStat returns a --stat summary of changes on this branch vs the merge-base
-// with origin/<default>. Returns "" if there are no changes.
+// with its upstream tracking ref. Returns "" if there are no changes.
 func DiffStat(host, dir string) (string, error) {
-	def := DefaultBranch(host, dir)
+	branch, err := runGit(host, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("cannot determine branch: %w", err)
+	}
+	upstream, err := UpstreamRef(host, dir, branch)
+	if err != nil {
+		return "", err
+	}
 	if host != "" {
 		script := fmt.Sprintf(
-			`mb=$(git -C '%s' merge-base 'origin/%s' HEAD) && git -C '%s' diff --stat "$mb"`,
-			dir, def, dir,
+			`mb=$(git -C '%s' merge-base '%s' HEAD) && git -C '%s' diff --stat "$mb"`,
+			dir, upstream, dir,
 		)
 		out, err := ssh.Run(host, script)
 		return strings.TrimSpace(out), err
 	}
-	mb, err := runGit("", dir, "merge-base", "origin/"+def, "HEAD")
+	mb, err := runGit("", dir, "merge-base", upstream, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("merge-base: %w", err)
 	}
@@ -366,22 +359,29 @@ func DiffStat(host, dir string) (string, error) {
 }
 
 // Diff returns the full diff of changes on this branch vs the merge-base
-// with origin/<default>. If color is true, ANSI color codes are included.
+// with its upstream tracking ref. If color is true, ANSI color codes are included.
 func Diff(host, dir string, color bool) (string, error) {
-	def := DefaultBranch(host, dir)
+	branch, err := runGit(host, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("cannot determine branch: %w", err)
+	}
+	upstream, err := UpstreamRef(host, dir, branch)
+	if err != nil {
+		return "", err
+	}
 	colorFlag := "--color=never"
 	if color {
 		colorFlag = "--color=always"
 	}
 	if host != "" {
 		script := fmt.Sprintf(
-			`mb=$(git -C '%s' merge-base 'origin/%s' HEAD) && git -C '%s' diff '%s' "$mb"`,
-			dir, def, dir, colorFlag,
+			`mb=$(git -C '%s' merge-base '%s' HEAD) && git -C '%s' diff '%s' "$mb"`,
+			dir, upstream, dir, colorFlag,
 		)
 		out, err := ssh.Run(host, script)
 		return strings.TrimSpace(out), err
 	}
-	mb, err := runGit("", dir, "merge-base", "origin/"+def, "HEAD")
+	mb, err := runGit("", dir, "merge-base", upstream, "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("merge-base: %w", err)
 	}
