@@ -126,10 +126,11 @@ history, and reattaching resumes the session.
 Create or resume a worktree.
 
 - No args: pull the current branch to ensure the worktree starts from the
-  latest remote state. Create a new worktree. Attach.
+  latest remote state. Create a new worktree. Attach. Pull again on exit so
+  the exit summary reflects the latest remote state.
 - With `name`: pull the repo's default branch (best-effort) to keep it fresh
   for future worktree creation and merge detection. Resume
-  `<repo>/.worktrees/<name>`. Attach.
+  `<repo>/.worktrees/<name>`. Attach. Pull again on exit.
 
 ### `wt -r <path>`
 
@@ -138,7 +139,8 @@ Create a new remote worktree.
 - `path` identifies the repo as a local-style path
   (e.g., `~/src/acme/api`), translated to the remote
   equivalent.
-- Pulls the current branch, then creates a new worktree. Attach.
+- Pulls the current branch, then creates a new worktree. Attach. Pull again
+  on exit.
 
 ### Attach
 
@@ -177,15 +179,19 @@ touch the same files). Phase 3 computes the branch's aggregate diff patch-id
 and searches `origin/<default>` for a commit with a matching patch-id. This
 works for both single-commit and multi-commit squash merges.
 
-All read paths (ls, rm) fetch from origin to ensure remote-tracking refs are
-current. Removal deletes the worktree
+All commands pull from origin (`git pull --ff-only --prune`) to keep the
+default branch current for accurate merge detection and status classification.
+Pre-creation pulls hard-fail (stale default branch means the new worktree
+branches from the wrong place). All other pulls are best-effort — warn and
+continue. Removal deletes the worktree
 directory and the branch. Session history in the database is not touched.
 
 ### `wt diff <name>`
 
-Show the changes on a worktree's branch. Computes the merge-base with
-`origin/<default>` and diffs against it, capturing both committed and
-uncommitted changes.
+Show the changes on a worktree's branch. Pulls the repo's default branch
+(best-effort) so the diff is computed against the latest remote state. Computes
+the merge-base with `origin/<default>` and diffs against it, capturing both
+committed and uncommitted changes.
 
 Output: `--stat` summary printed directly (stays in scrollback), then the full
 diff piped through `less -R` when stdout is a terminal. When piped (e.g., to an

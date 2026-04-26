@@ -79,6 +79,9 @@ func cmdLocal(args []string) {
 		if err := attach(serverURL, wtDir, ""); err != nil {
 			die("%v", err)
 		}
+		if err := git.Pull("", repo); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+		}
 		printExitRow(serverURL, worktree.Entry{
 			Name:      name,
 			Dir:       wtDir,
@@ -107,6 +110,9 @@ func cmdLocal(args []string) {
 		if err := attach(serverURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
+		if err := git.Pull(host, entry.Repo); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+		}
 		printExitRow(serverURL, entry)
 	} else {
 		if err := ssh.EnsureTunnel(entry.Host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
@@ -119,6 +125,9 @@ func cmdLocal(args []string) {
 		sessionID := opencode.FindLatestSession(remoteURL, entry.Dir)
 		if err := attach(remoteURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
+		}
+		if err := git.Pull(host, entry.Repo); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
 		}
 		printExitRow(remoteURL, entry)
 	}
@@ -168,6 +177,9 @@ func cmdRemote(args []string) {
 	if err := attach(serverURL, wtDir, sessionID); err != nil {
 		die("%v", err)
 	}
+	if err := git.Pull(host, repo); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+	}
 	printExitRow(serverURL, worktree.Entry{
 		Name:      name,
 		Dir:       wtDir,
@@ -179,7 +191,7 @@ func cmdRemote(args []string) {
 
 // cmdLs handles: wt ls
 func cmdLs(remoteOnly bool) {
-	all, fetched, enrichErr := discoverAll(remoteOnly, true)
+	all, pulled, enrichErr := discoverAll(remoteOnly, true)
 	if enrichErr != nil {
 		die("%v", enrichErr)
 	}
@@ -190,7 +202,7 @@ func cmdLs(remoteOnly bool) {
 		return
 	}
 
-	statuses := classifyAll(all, fetched)
+	statuses := classifyAll(all, pulled)
 
 	rows := make([]display.Row, len(all))
 	for i, e := range all {
@@ -213,6 +225,10 @@ func cmdDiff(args []string) {
 		die("worktree %q not found", name)
 	}
 	host := hostFor(entry)
+
+	if err := git.Pull(host, entry.Repo); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+	}
 
 	stat, err := git.DiffStat(host, entry.Dir)
 	if err != nil {

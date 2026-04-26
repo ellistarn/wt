@@ -28,7 +28,7 @@ func cmdRm(args []string, remoteOnly bool) {
 
 // classifyAll classifies all entries, batching remote entries into a single
 // SSH call per host and classifying local entries in parallel goroutines.
-func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
+func classifyAll(all []worktree.Entry, pulled pullResult) []string {
 	statuses := make([]string, len(all))
 
 	type remoteEntry struct {
@@ -47,7 +47,7 @@ func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
 
 	var wg sync.WaitGroup
 
-	// Remote: wait for fetches, then one SSH call per host.
+	// Remote: wait for pulls, then one SSH call per host.
 	for host, entries := range remoteByHost {
 		wg.Add(1)
 		go func(host string, entries []remoteEntry) {
@@ -56,7 +56,7 @@ func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
 			for _, re := range entries {
 				if !seen[re.entry.Repo] {
 					seen[re.entry.Repo] = true
-					fetched.Wait(re.entry)
+					pulled.Wait(re.entry)
 				}
 			}
 			var batchEntries []git.ClassifyEntry
@@ -98,7 +98,7 @@ func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
 		go func(idx int, entry worktree.Entry) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			fetched.Wait(entry)
+			pulled.Wait(entry)
 			statuses[idx] = classifyStatus(entry)
 		}(i, all[i])
 	}
@@ -170,7 +170,7 @@ func isRemovable(status string) bool {
 }
 
 func cmdRmBatch(remoteOnly bool) {
-	all, fetched, enrichErr := discoverAll(remoteOnly, false)
+	all, pulled, enrichErr := discoverAll(remoteOnly, true)
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
 	}
@@ -186,7 +186,7 @@ func cmdRmBatch(remoteOnly bool) {
 		errMsg string
 	}
 
-	statuses := classifyAll(all, fetched)
+	statuses := classifyAll(all, pulled)
 
 	// Remove sequentially
 	var results []result
