@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/ellistarn/wt/pkg/worktree"
@@ -37,6 +38,12 @@ type message struct {
 			Completed int64 `json:"completed"`
 		} `json:"time"`
 	} `json:"info"`
+}
+
+// sessionStatus captures the working/idle signal from a session's messages.
+type sessionStatus struct {
+	tokens    int  // context window size (last assistant message with non-zero total)
+	streaming bool // true if the most recent assistant message has not completed
 }
 
 // LocalServerURL returns the local OpenCode server URL.
@@ -94,31 +101,76 @@ func QuerySession(serverURL, directory string) (*Session, error) {
 }
 
 // Enrich enriches worktree entries with session data from the OpenCode server.
-// Fetches tokens for sessions that are actively streaming.
+// Fetches message status for sessions that may be actively streaming.
 func Enrich(serverURL string, entries []worktree.Entry) error {
 	if err := checkHealthFast(serverURL); err != nil {
 		return err
 	}
 
-	for i := range entries {
-		s, err := QuerySession(serverURL, entries[i].Dir)
-		if err != nil {
-			return err
+	// Bulk fetch ALL sessions (single HTTP call).
+	sessions, err := listSessions(serverURL, "")
+	if err != nil {
+		return err
+	}
+
+	// Build map[directory]*Session, first-per-directory wins (already sorted by updated desc).
+	byDir := make(map[string]*Session, len(sessions))
+	for i := range sessions {
+		if _, exists := byDir[sessions[i].Directory]; !exists {
+			byDir[sessions[i].Directory] = &sessions[i]
 		}
-		if s == nil {
+	}
+
+	// Match sessions to entries, set SessionID, Title, UpdatedAt.
+	for i := range entries {
+		s, ok := byDir[entries[i].Dir]
+		if !ok {
 			continue
 		}
 		entries[i].SessionID = s.ID
 		entries[i].Title = s.Title
 		entries[i].UpdatedAt = time.UnixMilli(s.Time.Updated)
 
-		if time.Since(entries[i].UpdatedAt) < 30*time.Second {
-			entries[i].Status = "working"
-			entries[i].Tokens = fetchSessionTokens(serverURL, s.ID)
-		} else if time.Since(entries[i].UpdatedAt) > StaleThreshold {
+		if time.Since(entries[i].UpdatedAt) > StaleThreshold {
 			entries[i].Status = "stale"
+		}
+	}
+
+	// For non-stale entries with sessions, fetch message status in parallel (bounded to 8).
+	type statusResult struct {
+		index  int
+		status sessionStatus
+	}
+	var toFetch []int
+	for i := range entries {
+		if entries[i].SessionID != "" && entries[i].Status != "stale" {
+			toFetch = append(toFetch, i)
+		}
+	}
+
+	results := make([]statusResult, len(toFetch))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for j, idx := range toFetch {
+		wg.Add(1)
+		go func(j, idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[j] = statusResult{
+				index:  idx,
+				status: fetchSessionStatus(serverURL, entries[idx].SessionID),
+			}
+		}(j, idx)
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		entries[r.index].Tokens = r.status.tokens
+		if r.status.streaming {
+			entries[r.index].Status = "working"
 		} else {
-			entries[i].Status = "idle"
+			entries[r.index].Status = "idle"
 		}
 	}
 
@@ -156,29 +208,42 @@ func listSessions(serverURL, directory string) ([]Session, error) {
 	return sessions, nil
 }
 
-// fetchSessionTokens returns the context window size for the session — the
-// total tokens from the last assistant message. Each message's Total field
-// represents the full context for that API call (input + output + cache), so
-// the last message gives the current context window usage.
-func fetchSessionTokens(serverURL, sessionID string) int {
+// fetchSessionStatus returns the context window size and streaming state for
+// the session. It walks backwards through the message list: the first (most
+// recent) assistant message determines streaming (completed == 0), and the
+// first assistant message with non-zero tokens.Total gives the token count.
+func fetchSessionStatus(serverURL, sessionID string) sessionStatus {
 	resp, err := httpGet(serverURL + "/session/" + sessionID + "/message")
 	if err != nil {
-		return 0
+		return sessionStatus{}
 	}
 	defer resp.Body.Close()
 
 	var messages []message
 	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
-		return 0
+		return sessionStatus{}
 	}
 
-	// Walk backwards to find the last assistant message with a non-zero total.
+	var result sessionStatus
+	foundStreaming := false
+	foundTokens := false
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Info.Role == "assistant" && messages[i].Info.Tokens.Total > 0 {
-			return messages[i].Info.Tokens.Total
+		if messages[i].Info.Role != "assistant" {
+			continue
+		}
+		if !foundStreaming {
+			result.streaming = messages[i].Info.Time.Completed == 0
+			foundStreaming = true
+		}
+		if !foundTokens && messages[i].Info.Tokens.Total > 0 {
+			result.tokens = messages[i].Info.Tokens.Total
+			foundTokens = true
+		}
+		if foundStreaming && foundTokens {
+			break
 		}
 	}
-	return 0
+	return result
 }
 
 func httpGet(u string) (*http.Response, error) {

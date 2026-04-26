@@ -86,10 +86,11 @@ func TestParseAttachDir(t *testing.T) {
 	}
 }
 
-// TestFetchSessionTokens_RegressionContextWindow verifies that fetchSessionTokens
+// TestFetchSessionStatus_ContextWindow verifies that fetchSessionStatus
 // returns the last assistant message's total (context window size), not the sum
 // across all messages. Summing double-counts input context that is re-sent each turn.
-func TestFetchSessionTokens_RegressionContextWindow(t *testing.T) {
+// Also verifies that a trailing zero-total, zero-completed message is detected as streaming.
+func TestFetchSessionStatus_ContextWindow(t *testing.T) {
 	messages := []message{
 		{Info: struct {
 			Role   string `json:"role"`
@@ -110,7 +111,9 @@ func TestFetchSessionTokens_RegressionContextWindow(t *testing.T) {
 			} `json:"time"`
 		}{Role: "assistant", Tokens: struct {
 			Total int `json:"total"`
-		}{Total: 25000}}},
+		}{Total: 25000}, Time: struct {
+			Completed int64 `json:"completed"`
+		}{Completed: 1700000000000}}},
 		{Info: struct {
 			Role   string `json:"role"`
 			Tokens struct {
@@ -130,8 +133,10 @@ func TestFetchSessionTokens_RegressionContextWindow(t *testing.T) {
 			} `json:"time"`
 		}{Role: "assistant", Tokens: struct {
 			Total int `json:"total"`
-		}{Total: 50000}}},
-		// Trailing zero-total message (incomplete/streaming).
+		}{Total: 50000}, Time: struct {
+			Completed int64 `json:"completed"`
+		}{Completed: 1700000001000}}},
+		// Trailing zero-total message (incomplete/streaming): completed == 0.
 		{Info: struct {
 			Role   string `json:"role"`
 			Tokens struct {
@@ -142,7 +147,9 @@ func TestFetchSessionTokens_RegressionContextWindow(t *testing.T) {
 			} `json:"time"`
 		}{Role: "assistant", Tokens: struct {
 			Total int `json:"total"`
-		}{Total: 0}}},
+		}{Total: 0}, Time: struct {
+			Completed int64 `json:"completed"`
+		}{Completed: 0}}},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,10 +157,74 @@ func TestFetchSessionTokens_RegressionContextWindow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := fetchSessionTokens(srv.URL, "test-session")
+	got := fetchSessionStatus(srv.URL, "test-session")
 
 	// Must return 50000 (last non-zero assistant total), not 75000 (sum).
-	if got != 50000 {
-		t.Errorf("fetchSessionTokens = %d, want 50000 (context window size, not sum)", got)
+	if got.tokens != 50000 {
+		t.Errorf("tokens = %d, want 50000 (context window size, not sum)", got.tokens)
+	}
+	// Trailing assistant message has completed == 0, so streaming should be true.
+	if !got.streaming {
+		t.Error("streaming = false, want true (last assistant message has completed == 0)")
+	}
+}
+
+// TestFetchSessionStatus_Idle verifies that a completed message returns streaming=false.
+func TestFetchSessionStatus_Idle(t *testing.T) {
+	messages := []message{
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "user"}},
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "assistant", Tokens: struct {
+			Total int `json:"total"`
+		}{Total: 30000}, Time: struct {
+			Completed int64 `json:"completed"`
+		}{Completed: 1700000000000}}},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(messages)
+	}))
+	defer srv.Close()
+
+	got := fetchSessionStatus(srv.URL, "test-session")
+
+	if got.tokens != 30000 {
+		t.Errorf("tokens = %d, want 30000", got.tokens)
+	}
+	if got.streaming {
+		t.Error("streaming = true, want false (last assistant message has non-zero completed)")
+	}
+}
+
+// TestFetchSessionStatus_NoMessages verifies that an empty message list
+// returns streaming=false and tokens=0.
+func TestFetchSessionStatus_NoMessages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]message{})
+	}))
+	defer srv.Close()
+
+	got := fetchSessionStatus(srv.URL, "test-session")
+
+	if got.tokens != 0 {
+		t.Errorf("tokens = %d, want 0", got.tokens)
+	}
+	if got.streaming {
+		t.Error("streaming = true, want false (no messages)")
 	}
 }

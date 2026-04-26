@@ -183,22 +183,31 @@ and merged into a single table sorted by most recent activity.
 Session metadata is fetched from the OpenCode server API, not from the database
 directly. For each server (local and remote):
 
-1. `GET /session?directory=<dir>` — per worktree, returns sessions across
-   projects. The most recently updated session is selected.
-2. `GET /session/<id>/message` — per session, reads the last assistant
-   message's total token count (context window size) and derives working/idle
-   from whether that message has completed.
+1. `GET /session?limit=1000` — single bulk fetch of all sessions. Matched to
+   worktrees client-side by directory. Eliminates per-worktree HTTP calls.
+2. `GET /session/<id>/message` — per session (parallel, bounded to 8
+   concurrent), reads the last assistant message's total token count (context
+   window size) and derives working/idle from whether that message has completed.
 
-Git state is determined per worktree by checking the working tree and branch
-against `origin/<default>`.
+Working/idle detection uses the last assistant message's `completed` timestamp:
+- `completed == null` → working (streaming)
+- `completed != null` → idle
+
+The server's `UpdatedAt` does not advance during streaming, so there is no
+reliable way to distinguish a long-running response from a crash orphan.
+`completed == null` is treated as working — a false positive ("working" on a
+crashed session) is preferable to a false negative (hiding active work).
+
+Git state is determined per worktree (parallel, bounded to 8 concurrent) by
+checking the working tree and branch against `origin/<default>`.
 
 ```
-WORKTREE            TITLE                           STATUS       ACTIVITY  TOKENS  REPO                              AGE
-0423T1430-12847     Fix auth handler validation      attached     now       150k    [remote] /home/user/.../acme/api   3h
-0423T1600-4419      Refactor config parser           committed    5m        42k     /Users/user/.../acme/api           1d
-0423T1700-8812      Migrate database schema          working      now       12k     [remote] /home/user/.../acme/api   2h
-0423T0900-2210      Add retry logic                  merged *     1h        80k     /Users/user/.../acme/api           2d
-0421T1100-5531      -                                empty *      -         -       [remote] /home/user/.../acme/web   2d
+WORKTREE            STATUS       TITLE                           REPO                              TOKENS  ACTIVITY  AGE
+0423T1430-12847     attached     Fix auth handler validation      [remote] /home/user/.../acme/api   150k    now       3h
+0423T1600-4419      committed    Refactor config parser           /Users/user/.../acme/api           42k     5m        1d
+0423T1700-8812      working      Migrate database schema          [remote] /home/user/.../acme/api   12k     now       2h
+0423T0900-2210      merged *     Add retry logic                  /Users/user/.../acme/api           80k     1h        2d
+0421T1100-5531      empty *      -                                [remote] /home/user/.../acme/web   -       -         2d
 ```
 
 Columns:
@@ -206,8 +215,8 @@ Columns:
 | Column | Value |
 |--------|-------|
 | WORKTREE | Worktree directory name (the stable identifier even if the branch is renamed). |
-| TITLE | Session title, auto-generated from the first prompt. `-` if no session. |
 | STATUS | Single highest-priority state from the table below. |
+| TITLE | Session title, auto-generated from the first prompt. `-` if no session. |
 | ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). `-` if no session. |
 | TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. `-` if no session. |
 | REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
@@ -219,7 +228,7 @@ removed by `wt rm`.
 | Status | Meaning |
 |--------|---------|
 | `attached` | TUI client connected |
-| `working` | Agent generating, no client |
+| `working` | Agent streaming (last assistant message incomplete) |
 | `dirty` | Uncommitted changes in working tree |
 | `merged *` | Changes incorporated into `origin/<default>` |
 | `committed` | Unique commits not in `origin/<default>` |
