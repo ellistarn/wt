@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ellistarn/wt/pkg/display"
 	"github.com/ellistarn/wt/pkg/ssh"
 )
 
@@ -337,9 +338,6 @@ func logCmd(host, dir, output string, args ...string) {
 	if host != "" {
 		cmd = host + ": " + cmd
 	}
-	if output != "" {
-		fmt.Fprintf(os.Stderr, "%s\n%s\n", cmd, output)
-	} else {
-		fmt.Fprintf(os.Stderr, "%s\n", cmd)
-	}
+	display.LogCmd(cmd)
+	display.LogOutput(output)
 }

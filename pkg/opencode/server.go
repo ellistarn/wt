@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ellistarn/wt/pkg/display"
 	"github.com/ellistarn/wt/pkg/ssh"
 )
 
@@ -43,7 +44,7 @@ func EnsureLocalServer() error {
 	}
 
 	cmd := exec.Command(binary, "serve", "--port", strconv.Itoa(port))
-	fmt.Fprintf(os.Stderr, "opencode serve --port %d\n", port)
+	display.LogCmd(fmt.Sprintf("opencode serve --port %d", port))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err == nil {
@@ -83,7 +84,7 @@ func EnsureRemoteServer(host string) error {
 
 	port := ServerPort()
 	startCmd := fmt.Sprintf("$SHELL -ic 'nohup opencode serve --port %d </dev/null >/dev/null 2>&1 &'", port)
-	fmt.Fprintf(os.Stderr, "%s: opencode serve --port %d\n", host, port)
+	display.LogCmd(fmt.Sprintf("%s: opencode serve --port %d", host, port))
 	if _, err := ssh.Run(host, startCmd); err != nil {
 		// Race — someone else may have started it.
 		if healthProbe(tunnelURL) == nil {
