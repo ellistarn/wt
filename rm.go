@@ -232,7 +232,7 @@ func cmdRmBatch(remoteOnly bool) {
 			Status: r.status,
 		}
 	}
-	display.PrintTable(rows)
+	display.PrintTable(rows, opencode.ServerPort())
 
 	for _, r := range results {
 		if r.errMsg != "" {
@@ -258,5 +258,5 @@ func cmdRmTargeted(name string) {
 	display.PrintTable([]display.Row{{
 		Entry:  entry,
 		Status: "removed",
-	}})
+	}}, opencode.ServerPort())
 }

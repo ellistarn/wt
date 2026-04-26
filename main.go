@@ -211,7 +211,7 @@ func cmdLs(remoteOnly bool) {
 			Status: statuses[i],
 		}
 	}
-	display.PrintTable(rows)
+	display.PrintTable(rows, opencode.ServerPort())
 }
 
 // cmdDiff handles: wt diff <name>
@@ -319,7 +319,7 @@ func printExitRow(serverURL string, entry worktree.Entry) {
 	display.PrintTable([]display.Row{{
 		Entry:  entry,
 		Status: classifyStatus(entry),
-	}})
+	}}, opencode.ServerPort())
 }
 
 // attach runs opencode attach as a subprocess, connecting to the given server.

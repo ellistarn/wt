@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ellistarn/wt/pkg/display"
+	"github.com/ellistarn/wt/pkg/cmdlog"
 )
 
 // Host returns WT_REMOTE_HOST or an error if unset.
@@ -90,7 +90,7 @@ func EnsureTunnel(host string, localPort, remotePort int) error {
 		"-o", "ControlMaster=yes",
 		"-o", "ControlPath="+controlPath,
 		"-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
-	display.LogCmd(fmt.Sprintf("ssh -fNL %d:localhost:%d %s", localPort, remotePort, host))
+	cmdlog.LogCmd(fmt.Sprintf("ssh -fNL %d:localhost:%d %s", localPort, remotePort, host))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Another process may have started the tunnel between our health
 		// check and this SSH invocation (race on "address already in use").
