@@ -19,14 +19,15 @@ func Host() (string, error) {
 	return host, nil
 }
 
+// controlPath is the shared SSH mux socket path. The tunnel (EnsureTunnel)
+// creates the mux master; all other SSH calls (Run) reuse it.
+const controlPath = "/tmp/wt-ssh-%r@%h:%p"
+
 // Run executes a command on the remote host via SSH, passing cmd via stdin to bash.
-// Uses ControlMaster to multiplex connections — the first call to a given host
-// pays the full TCP+auth cost; subsequent calls within ControlPersist reuse it.
+// Reuses the tunnel's mux socket if available; falls back to a direct connection.
 func Run(host, cmd string) (string, error) {
 	c := exec.Command("ssh",
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=/tmp/wt-ssh-%r@%h:%p",
-		"-o", "ControlPersist=60",
+		"-o", "ControlPath="+controlPath,
 		host, "bash")
 	c.Stdin = strings.NewReader(cmd)
 	out, err := c.CombinedOutput()
@@ -83,7 +84,10 @@ func EnsureTunnel(host string, localPort, remotePort int) error {
 	if tunnelHealthy(localPort) {
 		return nil
 	}
-	cmd := exec.Command("ssh", "-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
+	cmd := exec.Command("ssh",
+		"-o", "ControlMaster=yes",
+		"-o", "ControlPath="+controlPath,
+		"-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
 	fmt.Fprintf(os.Stderr, "ssh -fNL %d:localhost:%d %s\n", localPort, remotePort, host)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Another process may have started the tunnel between our health

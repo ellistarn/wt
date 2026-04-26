@@ -26,6 +26,83 @@ func cmdRm(args []string, remoteOnly bool) {
 	}
 }
 
+// classifyAll classifies all entries, batching remote entries into a single
+// SSH call per host and classifying local entries in parallel goroutines.
+func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
+	statuses := make([]string, len(all))
+
+	type remoteEntry struct {
+		idx   int
+		entry worktree.Entry
+	}
+	remoteByHost := make(map[string][]remoteEntry)
+	var localIdxs []int
+	for i, e := range all {
+		if e.Remote {
+			remoteByHost[hostFor(e)] = append(remoteByHost[hostFor(e)], remoteEntry{i, e})
+		} else {
+			localIdxs = append(localIdxs, i)
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	// Remote: wait for fetches, then one SSH call per host.
+	for host, entries := range remoteByHost {
+		wg.Add(1)
+		go func(host string, entries []remoteEntry) {
+			defer wg.Done()
+			seen := make(map[string]bool)
+			for _, re := range entries {
+				if !seen[re.entry.Repo] {
+					seen[re.entry.Repo] = true
+					fetched.Wait(re.entry)
+				}
+			}
+			var batchEntries []git.ClassifyEntry
+			var batchIdxs []int
+			for _, re := range entries {
+				e := re.entry
+				if e.Attached {
+					statuses[re.idx] = "attached"
+					continue
+				}
+				if e.Status == "working" {
+					statuses[re.idx] = "working"
+					continue
+				}
+				batchEntries = append(batchEntries, git.ClassifyEntry{
+					Dir:    e.Dir,
+					Repo:   e.Repo,
+					Branch: e.Name,
+				})
+				batchIdxs = append(batchIdxs, re.idx)
+			}
+			results := git.ClassifyBatch(host, batchEntries)
+			for j, r := range results {
+				idx := batchIdxs[j]
+				statuses[idx] = classifyFromResult(all[idx], r.Clean, r.Unique, r.Merged)
+			}
+		}(host, entries)
+	}
+
+	// Local: parallel goroutines.
+	sem := make(chan struct{}, 8)
+	for _, i := range localIdxs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, entry worktree.Entry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fetched.Wait(entry)
+			statuses[idx] = classifyStatus(entry)
+		}(i, all[i])
+	}
+
+	wg.Wait()
+	return statuses
+}
+
 // classifyStatus returns the single highest-priority status for a worktree.
 // Priority: attached > working > dirty > merged > committed > idle > stale > empty.
 func classifyStatus(e worktree.Entry) string {
@@ -60,6 +137,28 @@ func classifyStatus(e worktree.Entry) string {
 	return "idle"
 }
 
+// classifyFromResult applies the same priority logic as classifyStatus but
+// uses pre-computed git results (from a batch SSH call) instead of making
+// individual git calls.
+func classifyFromResult(e worktree.Entry, clean bool, unique int, merged bool) string {
+	if !clean {
+		return "dirty"
+	}
+	if unique > 0 {
+		if merged {
+			return "merged"
+		}
+		return "committed"
+	}
+	if e.SessionID == "" {
+		return "empty"
+	}
+	if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
+		return "stale"
+	}
+	return "idle"
+}
+
 // isRemovable returns true if a status indicates the worktree is safe to remove.
 func isRemovable(status string) bool {
 	return status == "merged" || status == "stale" || status == "empty"
@@ -82,21 +181,7 @@ func cmdRmBatch(remoteOnly bool) {
 		errMsg string
 	}
 
-	// Classify in parallel
-	statuses := make([]string, len(all))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-	for i, e := range all {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, entry worktree.Entry) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			fetched.Wait(entry)
-			statuses[idx] = classifyStatus(entry)
-		}(i, e)
-	}
-	wg.Wait()
+	statuses := classifyAll(all, fetched)
 
 	// Remove sequentially
 	var results []result
