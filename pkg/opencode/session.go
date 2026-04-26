@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,17 +114,22 @@ func Enrich(serverURL string, entries []worktree.Entry) error {
 		return err
 	}
 
-	// Build map[directory]*Session, first-per-directory wins (already sorted by updated desc).
-	byDir := make(map[string]*Session, len(sessions))
+	// Match sessions to entries by worktree name — the unique timestamp-based
+	// ID in the /.worktrees/<name> path. Matching by name instead of full path
+	// avoids mismatches from symlink differences across hosts (e.g.
+	// /local/home/user/... vs /home/user/...).
+	// First-per-name wins (sessions are already sorted by updated desc).
+	byName := make(map[string]*Session, len(sessions))
 	for i := range sessions {
-		if _, exists := byDir[sessions[i].Directory]; !exists {
-			byDir[sessions[i].Directory] = &sessions[i]
+		if name := worktreeName(sessions[i].Directory); name != "" {
+			if _, exists := byName[name]; !exists {
+				byName[name] = &sessions[i]
+			}
 		}
 	}
 
-	// Match sessions to entries, set SessionID, Title, UpdatedAt.
 	for i := range entries {
-		s, ok := byDir[entries[i].Dir]
+		s, ok := byName[entries[i].Name]
 		if !ok {
 			continue
 		}
@@ -244,6 +250,19 @@ func fetchSessionStatus(serverURL, sessionID string) sessionStatus {
 		}
 	}
 	return result
+}
+
+// worktreeName extracts the worktree name from a path containing /.worktrees/<name>.
+// Returns "" if the path doesn't match the pattern.
+func worktreeName(dir string) string {
+	const marker = "/.worktrees/"
+	if i := strings.LastIndex(dir, marker); i >= 0 {
+		name := dir[i+len(marker):]
+		if name != "" && !strings.Contains(name, "/") {
+			return name
+		}
+	}
+	return ""
 }
 
 func httpGet(u string) (*http.Response, error) {
