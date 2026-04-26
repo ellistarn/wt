@@ -30,7 +30,7 @@ managed from within OpenCode, not by this tool.
 
 A session is **working** when the agent is actively generating a response,
 **idle** when the session exists but is not generating, and **stale** when the
-session has been idle for more than 12 hours. A worktree with no session has no
+session has been idle for more than 4 hours. A worktree with no session has no
 status.
 
 An **OpenCode server** is a persistent process running `opencode serve`. One
@@ -242,7 +242,7 @@ removed by `wt rm`.
 | `merged *` | Changes incorporated into `origin/<default>` |
 | `committed` | Unique commits not in `origin/<default>` |
 | `idle` | Session exists, no unique commits, recent |
-| `stale *` | Session inactive >12 hours, no unique commits |
+| `stale *` | Session inactive >4 hours, no unique commits |
 | `empty *` | No session was ever created |
 
 Session states (`attached`, `working`) take priority — the worktree is in active

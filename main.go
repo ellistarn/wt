@@ -218,7 +218,7 @@ Status:
   merged *    Changes incorporated into default branch
   committed   Unique commits not yet in default branch
   idle        Session exists, no unique commits
-  stale *     Session inactive >12 hours, no unique commits
+  stale *     Session inactive >4 hours, no unique commits
   empty *     No session was ever created
 
 Flags:
