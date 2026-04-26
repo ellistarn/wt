@@ -449,6 +449,77 @@ func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	}
 }
 
+// TestLs_RegressionMergeTreeConflict verifies that squash merge detection
+// works when git merge-tree produces conflicts. This happens when main has
+// moved forward and later commits touch the same files the branch modified.
+// The merge-tree simulation (Phase 2) fails with conflicts, but the patch-id
+// comparison (Phase 3) correctly identifies the squash merge.
+func TestLs_RegressionMergeTreeConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a branch that modifies a file
+	wt := env.addWorktree("conflict-branch")
+	env.commitFile(wt, "shared.txt", "branch content", "branch change")
+	env.push("conflict-branch")
+	env.createIdleSession(wt)
+	env.squashMergeToMain("conflict-branch")
+	gitCmd(t, env.repo, "checkout", "main")
+
+	// Now add more commits to main that modify the same file, causing
+	// merge-tree conflicts when it tries to simulate merging the branch.
+	os.WriteFile(filepath.Join(env.repo, "shared.txt"), []byte("later main content"), 0644)
+	gitCmd(t, env.repo, "add", "shared.txt")
+	gitCmd(t, env.repo, "commit", "-m", "main moves forward on same file")
+	gitCmd(t, env.repo, "push", "origin", "main")
+	gitCmd(t, env.repo, "fetch", "origin")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "conflict-branch") || !strings.Contains(out, "merged *") {
+		t.Error("squash-merged worktree with merge-tree conflicts should be classified as merged * via patch-id fallback")
+	}
+}
+
+// TestLs_RegressionMultiCommitSquash verifies that patch-id detection works
+// for branches with multiple commits that are squash-merged into a single
+// commit on main, and where merge-tree produces conflicts.
+func TestLs_RegressionMultiCommitSquash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a branch with multiple commits
+	wt := env.addWorktree("multi-commit")
+	env.commitFile(wt, "a.txt", "first change", "commit 1")
+	env.commitFile(wt, "b.txt", "second change", "commit 2")
+	env.commitFile(wt, "c.txt", "third change", "commit 3")
+	env.push("multi-commit")
+	env.createIdleSession(wt)
+	env.squashMergeToMain("multi-commit")
+	gitCmd(t, env.repo, "checkout", "main")
+
+	// Add a conflicting change on main to force Phase 3
+	os.WriteFile(filepath.Join(env.repo, "a.txt"), []byte("later main content"), 0644)
+	gitCmd(t, env.repo, "add", "a.txt")
+	gitCmd(t, env.repo, "commit", "-m", "main moves forward on same file")
+	gitCmd(t, env.repo, "push", "origin", "main")
+	gitCmd(t, env.repo, "fetch", "origin")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "multi-commit") || !strings.Contains(out, "merged *") {
+		t.Error("multi-commit squash-merged worktree should be classified as merged * via patch-id fallback")
+	}
+}
+
 func TestLs_SessionActiveStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")

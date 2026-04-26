@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -124,12 +125,15 @@ func UniqueCommitCount(host, repo, branch string) int {
 // IsMerged returns true if the branch's changes are incorporated into
 // origin/<default> (regular merge, fast-forward, or squash merge).
 //
-// Detection is two-phase:
+// Detection is three-phase:
 //  1. Ancestry check — catches regular merges and fast-forward merges.
-//  2. Merge-tree simulation — catches squash merges. Simulates merging the
-//     branch into origin/<default> and checks whether the result tree is
-//     identical to origin/<default>'s tree (i.e., the branch adds nothing new).
-//     Requires git 2.38+.
+//  2. Merge-tree simulation — catches squash merges when the branch merges
+//     cleanly into origin/<default>. Requires git 2.38+.
+//  3. Patch-id comparison — catches squash merges when merge-tree produces
+//     conflicts (e.g., when origin/<default> has moved forward significantly).
+//     Computes the branch's aggregate diff patch-id and searches for a commit
+//     on origin/<default> with a matching patch-id. Works for single and
+//     multi-commit squash merges.
 //
 // Callers should only invoke this when the branch has unique commits
 // (UniqueCommitCount > 0). A branch with no divergence trivially matches
@@ -138,21 +142,92 @@ func IsMerged(host, repo, branch string) bool {
 	def := DefaultBranch(host, repo)
 	target := "origin/" + def
 
-	// Fast path: ancestry check (regular merge / fast-forward).
+	// Phase 1: ancestry check (regular merge / fast-forward).
 	if _, err := runGit(host, repo, "merge-base", "--is-ancestor", branch, target); err == nil {
 		return true
 	}
 
-	// Slow path: merge-tree simulation (squash merge).
+	// Phase 2: merge-tree simulation (squash merge, no conflicts).
 	mergeTree, err := runGit(host, repo, "merge-tree", "--write-tree", target, branch)
-	if err != nil {
-		return false // conflict or git too old — not merged
+	if err == nil {
+		targetTree, err := runGit(host, repo, "rev-parse", target+"^{tree}")
+		if err == nil && mergeTree == targetTree {
+			return true
+		}
 	}
-	targetTree, err := runGit(host, repo, "rev-parse", target+"^{tree}")
+
+	// Phase 3: patch-id comparison (squash merge, merge-tree had conflicts).
+	return hasPatchIDMatch(host, repo, target, branch)
+}
+
+// hasPatchIDMatch computes the aggregate patch-id of the branch's diff
+// (merge-base to branch tip) and checks whether any commit on the target
+// has the same patch-id. This detects squash merges even when merge-tree
+// simulation fails due to conflicts with later changes on the target.
+// Works for both single-commit and multi-commit squash merges.
+func hasPatchIDMatch(host, repo, target, branch string) bool {
+	mergeBase, err := runGit(host, repo, "merge-base", target, branch)
 	if err != nil {
 		return false
 	}
-	return mergeTree == targetTree
+	diff, err := runGit(host, repo, "diff", mergeBase, branch)
+	if err != nil || diff == "" {
+		return false
+	}
+	branchPID := computePatchID(diff)
+	if branchPID == "" {
+		return false
+	}
+	return searchPatchID(repo, mergeBase+".."+target, branchPID)
+}
+
+// computePatchID computes the patch-id of a diff by piping it through
+// git patch-id --stable.
+func computePatchID(diff string) string {
+	cmd := exec.Command("git", "patch-id", "--stable")
+	cmd.Stdin = strings.NewReader(diff)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	if fields := strings.Fields(strings.TrimSpace(string(out))); len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
+}
+
+// searchPatchID pipes git log -p through git patch-id --stable and checks
+// whether any commit in the range has the given patch-id. Searches at most
+// 500 commits to bound cost on repos with long histories.
+func searchPatchID(repo, revRange, targetPID string) bool {
+	logCmd := exec.Command("git", "-C", repo, "log", "-p", "--max-count=500", revRange)
+	pidCmd := exec.Command("git", "patch-id", "--stable")
+
+	pipe, err := logCmd.StdoutPipe()
+	if err != nil {
+		return false
+	}
+	pidCmd.Stdin = pipe
+
+	var out bytes.Buffer
+	pidCmd.Stdout = &out
+
+	if err := logCmd.Start(); err != nil {
+		return false
+	}
+	if err := pidCmd.Start(); err != nil {
+		logCmd.Process.Kill()
+		return false
+	}
+	logCmd.Wait()
+	pidCmd.Wait()
+
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == targetPID {
+			return true
+		}
+	}
+	return false
 }
 
 // ClassifyEntry holds the input for batch classification.
@@ -227,6 +302,19 @@ while IFS=$'\t' read -r dir repo branch; do
             target_tree=$(git -C "$repo" rev-parse "origin/${def}^{tree}" 2>/dev/null) || target_tree=""
             if [ -n "$merge_tree" ] && [ "$merge_tree" = "$target_tree" ]; then
                 merged=true
+            fi
+            # Phase 3: patch-id comparison (squash merge, merge-tree had conflicts)
+            if [ "$merged" = "false" ]; then
+                mb=$(git -C "$repo" merge-base "origin/$def" "$branch" 2>/dev/null) || mb=""
+                if [ -n "$mb" ]; then
+                    bpid=$(git -C "$repo" diff "$mb" "$branch" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')
+                    if [ -n "$bpid" ]; then
+                        match=$(git -C "$repo" log -p --max-count=500 "$mb..origin/$def" 2>/dev/null | git patch-id --stable 2>/dev/null | awk -v pid="$bpid" '$1 == pid {print "yes"; exit}')
+                        if [ "$match" = "yes" ]; then
+                            merged=true
+                        fi
+                    fi
+                fi
             fi
         fi
     fi

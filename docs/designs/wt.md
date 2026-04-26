@@ -168,10 +168,14 @@ state from `wt ls`.
 landed, the session went dormant with no commits, or no session was ever
 created. All other statuses are kept. `wt ls` is the preview.
 
-Squash merges are detected using `git merge-tree --write-tree` (requires git
-2.38+): if simulating a merge of the branch into `origin/<default>` produces a
-tree identical to the target's current tree, the branch's changes are already
-incorporated.
+Merge detection is three-phase: (1) ancestry check (`merge-base --is-ancestor`)
+catches regular and fast-forward merges; (2) merge-tree simulation
+(`merge-tree --write-tree`, requires git 2.38+) catches squash merges when the
+branch merges cleanly; (3) patch-id comparison catches squash merges when
+merge-tree produces conflicts (e.g., main has moved forward and later commits
+touch the same files). Phase 3 computes the branch's aggregate diff patch-id
+and searches `origin/<default>` for a commit with a matching patch-id. This
+works for both single-commit and multi-commit squash merges.
 
 All read paths (ls, rm) fetch from origin to ensure remote-tracking refs are
 current. Removal deletes the worktree
