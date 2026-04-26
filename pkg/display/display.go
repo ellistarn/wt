@@ -29,6 +29,7 @@ func PrintTable(rows []Row) {
 	if len(rows) == 0 {
 		return
 	}
+	fmt.Println()
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tREPO\tTOKENS\tACTIVITY\tAGE\n")
 
