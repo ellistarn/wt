@@ -346,6 +346,48 @@ done << 'ENTRIES'
 	return results, nil
 }
 
+// DiffStat returns a --stat summary of changes on this branch vs the merge-base
+// with origin/<default>. Returns "" if there are no changes.
+func DiffStat(host, dir string) (string, error) {
+	def := DefaultBranch(host, dir)
+	if host != "" {
+		script := fmt.Sprintf(
+			`mb=$(git -C '%s' merge-base 'origin/%s' HEAD) && git -C '%s' diff --stat "$mb"`,
+			dir, def, dir,
+		)
+		out, err := ssh.Run(host, script)
+		return strings.TrimSpace(out), err
+	}
+	mb, err := runGit("", dir, "merge-base", "origin/"+def, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("merge-base: %w", err)
+	}
+	return runGit("", dir, "diff", "--stat", mb)
+}
+
+// Diff returns the full diff of changes on this branch vs the merge-base
+// with origin/<default>. If color is true, ANSI color codes are included.
+func Diff(host, dir string, color bool) (string, error) {
+	def := DefaultBranch(host, dir)
+	colorFlag := "--color=never"
+	if color {
+		colorFlag = "--color=always"
+	}
+	if host != "" {
+		script := fmt.Sprintf(
+			`mb=$(git -C '%s' merge-base 'origin/%s' HEAD) && git -C '%s' diff '%s' "$mb"`,
+			dir, def, dir, colorFlag,
+		)
+		out, err := ssh.Run(host, script)
+		return strings.TrimSpace(out), err
+	}
+	mb, err := runGit("", dir, "merge-base", "origin/"+def, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("merge-base: %w", err)
+	}
+	return runGit("", dir, "diff", colorFlag, mb)
+}
+
 // IsClean returns true if the worktree has no modified, staged, or untracked files.
 func IsClean(host, dir string) bool {
 	out, err := runGit(host, dir, "status", "--porcelain")

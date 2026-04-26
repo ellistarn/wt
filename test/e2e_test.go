@@ -625,3 +625,52 @@ func TestRemote_HostUnreachable(t *testing.T) {
 	}
 	assertContains(t, out, "cannot resolve remote HOME")
 }
+
+// --- Diff tests ---
+
+func TestDiff_CommittedChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("diff-test")
+	env.commitFile(wt, "feature.txt", "new feature content", "add feature")
+
+	out := env.wt("diff", "diff-test")
+	t.Log("output:\n" + out)
+
+	// Stat summary should list the changed file
+	assertContains(t, out, "feature.txt")
+	// Full diff should contain the file content
+	assertContains(t, out, "new feature content")
+}
+
+func TestDiff_NoChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	env.addWorktree("diff-empty")
+
+	out := env.wt("diff", "diff-empty")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "No changes on this branch.")
+}
+
+func TestDiff_NotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out := env.wt("diff", "nonexistent")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "not found")
+}
