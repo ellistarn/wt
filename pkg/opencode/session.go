@@ -102,7 +102,7 @@ func QuerySession(serverURL, directory string) (*Session, error) {
 
 // Enrich enriches worktree entries with session data from the OpenCode server.
 // Queries each entry's session by directory (crossing project boundaries) and
-// fetches message status for sessions that may be actively streaming.
+// fetches message status (token count and streaming state) for each session.
 func Enrich(serverURL string, entries []worktree.Entry) error {
 	if err := checkHealthFast(serverURL); err != nil {
 		return err
@@ -128,13 +128,13 @@ func Enrich(serverURL string, entries []worktree.Entry) error {
 			entries[i].Title = s.Title
 			entries[i].UpdatedAt = time.UnixMilli(s.Time.Updated)
 
+			status := fetchSessionStatus(serverURL, entries[i].SessionID)
+			entries[i].Tokens = status.tokens
+
 			if time.Since(entries[i].UpdatedAt) > StaleThreshold {
 				entries[i].Status = "stale"
 				return
 			}
-
-			status := fetchSessionStatus(serverURL, entries[i].SessionID)
-			entries[i].Tokens = status.tokens
 			if status.streaming {
 				entries[i].Status = "working"
 			} else {

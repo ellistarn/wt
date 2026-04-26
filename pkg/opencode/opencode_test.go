@@ -289,3 +289,81 @@ func TestEnrich_RegressionCrossProject(t *testing.T) {
 		t.Errorf("entries[1].SessionID = %q, want empty", entries[1].SessionID)
 	}
 }
+
+// TestEnrich_RegressionStaleTokens verifies that stale sessions (UpdatedAt >
+// StaleThreshold) still get their Tokens field populated. Previously, the stale
+// check returned early before calling fetchSessionStatus, causing stale sessions
+// to show "-" for tokens even when the session had token data.
+func TestEnrich_RegressionStaleTokens(t *testing.T) {
+	staleTime := time.Now().Add(-StaleThreshold - time.Hour).UnixMilli()
+
+	session := Session{
+		ID:        "sess-stale",
+		Directory: "/home/user/wt/.worktrees/c4d9e01",
+		Title:     "stale session with tokens",
+		Time: struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		}{Updated: staleTime},
+	}
+
+	messages := []message{
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "user"}},
+		{Info: struct {
+			Role   string `json:"role"`
+			Tokens struct {
+				Total int `json:"total"`
+			} `json:"tokens"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		}{Role: "assistant", Tokens: struct {
+			Total int `json:"total"`
+		}{Total: 42000}, Time: struct {
+			Completed int64 `json:"completed"`
+		}{Completed: staleTime}}},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/session", func(w http.ResponseWriter, r *http.Request) {
+		dir := r.URL.Query().Get("directory")
+		if dir == session.Directory {
+			json.NewEncoder(w).Encode([]Session{session})
+		} else {
+			json.NewEncoder(w).Encode([]Session{})
+		}
+	})
+	mux.HandleFunc("/session/sess-stale/message", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(messages)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	entries := []worktree.Entry{
+		{
+			Name: "c4d9e01",
+			Dir:  "/home/user/wt/.worktrees/c4d9e01",
+		},
+	}
+
+	if err := Enrich(srv.URL, entries); err != nil {
+		t.Fatalf("Enrich: %v", err)
+	}
+	if entries[0].Status != "stale" {
+		t.Errorf("Status = %q, want %q", entries[0].Status, "stale")
+	}
+	if entries[0].Tokens != 42000 {
+		t.Errorf("Tokens = %d, want 42000 (stale sessions must still populate tokens)", entries[0].Tokens)
+	}
+}
