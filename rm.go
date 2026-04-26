@@ -78,7 +78,11 @@ func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
 				})
 				batchIdxs = append(batchIdxs, re.idx)
 			}
-			results := git.ClassifyBatch(host, batchEntries)
+			results, err := git.ClassifyBatch(host, batchEntries)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+				return
+			}
 			for j, r := range results {
 				idx := batchIdxs[j]
 				statuses[idx] = classifyFromResult(all[idx], r.Clean, r.Unique, r.Merged)
@@ -137,9 +141,10 @@ func classifyStatus(e worktree.Entry) string {
 	return "idle"
 }
 
-// classifyFromResult applies the same priority logic as classifyStatus but
-// uses pre-computed git results (from a batch SSH call) instead of making
-// individual git calls.
+// classifyFromResult classifies a worktree using pre-computed git results
+// (from a batch SSH call) instead of making individual git calls.
+// Unlike classifyStatus, this does NOT check Attached or working status —
+// callers must handle those cases before calling this function.
 func classifyFromResult(e worktree.Entry, clean bool, unique int, merged bool) string {
 	if !clean {
 		return "dirty"

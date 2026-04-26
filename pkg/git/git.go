@@ -247,9 +247,10 @@ type ClassifyResult struct {
 // ClassifyBatch classifies multiple remote worktrees in a single SSH call.
 // Replicates the logic of IsClean + UniqueCommitCount + IsMerged but runs
 // all git commands on the remote host in one round-trip.
-func ClassifyBatch(host string, entries []ClassifyEntry) []ClassifyResult {
+// Returns an error if the SSH call fails entirely.
+func ClassifyBatch(host string, entries []ClassifyEntry) ([]ClassifyResult, error) {
 	if len(entries) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Build heredoc with one entry per line: dir\trepo\tbranch
@@ -325,8 +326,7 @@ done << 'ENTRIES'
 `
 	out, err := ssh.Run(host, script)
 	if err != nil {
-		// Fallback: return empty results (caller will get zero values)
-		return make([]ClassifyResult, len(entries))
+		return nil, fmt.Errorf("remote classify: %w", err)
 	}
 
 	results := make([]ClassifyResult, len(entries))
@@ -343,7 +343,7 @@ done << 'ENTRIES'
 		results[i].Unique, _ = strconv.Atoi(parts[1])
 		results[i].Merged = parts[2] == "true"
 	}
-	return results
+	return results, nil
 }
 
 // IsClean returns true if the worktree has no modified, staged, or untracked files.
