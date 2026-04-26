@@ -239,7 +239,7 @@ func TestFetchSessionStatus_NoMessages(t *testing.T) {
 func TestEnrich_RegressionCrossProject(t *testing.T) {
 	session := Session{
 		ID:        "sess-1",
-		Directory: "/home/user/kro/.worktrees/0425T1457-57407",
+		Directory: "/home/user/kro/.worktrees/a3f8c12",
 		Title:     "fix auth bug",
 		Time: struct {
 			Created int64 `json:"created"`
@@ -267,12 +267,12 @@ func TestEnrich_RegressionCrossProject(t *testing.T) {
 
 	entries := []worktree.Entry{
 		{
-			Name: "0425T1457-57407",
-			Dir:  "/home/user/kro/.worktrees/0425T1457-57407",
+			Name: "a3f8c12",
+			Dir:  "/home/user/kro/.worktrees/a3f8c12",
 		},
 		{
-			Name: "0425T2308-84317",
-			Dir:  "/home/user/wt/.worktrees/0425T2308-84317", // no session for this one
+			Name: "b7e2a09",
+			Dir:  "/home/user/wt/.worktrees/b7e2a09", // no session for this one
 		},
 	}
 

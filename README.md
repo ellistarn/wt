@@ -5,12 +5,12 @@ Worktree session manager for [OpenCode](https://opencode.ai).
 ```
 $ wt ls
 WORKTREE            TITLE                              STATUS    ACTIVITY  TOKENS  REPO                                    AGE
-0424T0900-31337     Rewrite Linux scheduler in Rust     attached  now       380k    /home/torvalds/.../linux/kernel          3h
-0421T1030-00001     Implement quantum-safe cryptography working   now       240k    [remote] /home/satoshi/.../bitcoin/src   3d
-1213T0800-42069     Autonomous drone delivery           working   now       85k     /home/bezos/.../amazon/prime-air         12y
-0423T1600-12345     Add exceptions to Go                idle      6h        45k     /home/robpike/.../golang/go              1d
-1215T0900-80085     Actually open OpenAI                idle      10y       120k    /home/altman/.../openai/models           10y
-0423T0900-99999     -                                   -         -         -       /home/user/.../acme/toolkit             1d
+a3f8c12     Rewrite Linux scheduler in Rust     attached  now       380k    /home/torvalds/.../linux/kernel          3h
+b7e2a09     Implement quantum-safe cryptography working   now       240k    [remote] /home/satoshi/.../bitcoin/src   3d
+e1d4b83     Autonomous drone delivery           working   now       85k     /home/bezos/.../amazon/prime-air         12y
+c9a1f57     Add exceptions to Go                idle      6h        45k     /home/robpike/.../golang/go              1d
+d5b8e24     Actually open OpenAI                idle      10y       120k    /home/altman/.../openai/models           10y
+f2c7d91     -                                   -         -         -       /home/user/.../acme/toolkit             1d
 ```
 
 ## Usage

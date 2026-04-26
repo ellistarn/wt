@@ -1,8 +1,8 @@
 package worktree
 
 import (
-	"fmt"
-	"math/rand"
+	"crypto/rand"
+	"encoding/hex"
 	"sort"
 	"time"
 )
@@ -22,10 +22,15 @@ type Entry struct {
 	Attached  bool      // true if a TUI client is attached to this worktree
 }
 
-// GenerateName returns a timestamped random name for a new worktree.
+// GenerateName returns a short random hex name for a new worktree.
+// 7 hex chars = 28 bits of entropy (~268M namespace), sufficient for
+// collision-free operation across 100k+ worktrees.
 func GenerateName() string {
-	now := time.Now()
-	return fmt.Sprintf("%s-%d", now.Format("0102T1504"), rand.Intn(100000))
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])[:7]
 }
 
 // Sort sorts entries by most recent activity (UpdatedAt), newest first.
