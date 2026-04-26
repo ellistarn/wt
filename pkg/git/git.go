@@ -394,18 +394,8 @@ func IsClean(host, dir string) bool {
 	return err == nil && out == ""
 }
 
-// Fetch updates remote tracking refs for a repo.
-func Fetch(host, repo string) {
-	args := []string{"fetch", "origin"}
-	out, _ := runCapture(host, repo, args...)
-	if out != "" {
-		logCmd(host, repo, out, args...)
-	}
-}
-
-// Pull fetches with prune and fast-forwards the current branch. Used before
-// creating worktrees so they branch from the latest remote state. Uses
-// --ff-only to fail explicitly if the local branch has diverged.
+// Pull fetches with prune and fast-forwards the current branch.
+// Uses --ff-only to fail explicitly if the local branch has diverged.
 func Pull(host, repo string) error {
 	args := []string{"pull", "--ff-only", "--prune"}
 	out, err := runCapture(host, repo, args...)
