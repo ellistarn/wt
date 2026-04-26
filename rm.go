@@ -38,8 +38,8 @@ func classifyAll(all []worktree.Entry, fetched fetchResult) []string {
 	remoteByHost := make(map[string][]remoteEntry)
 	var localIdxs []int
 	for i, e := range all {
-		if e.Remote {
-			remoteByHost[hostFor(e)] = append(remoteByHost[hostFor(e)], remoteEntry{i, e})
+		if e.Host != "" {
+			remoteByHost[e.Host] = append(remoteByHost[e.Host], remoteEntry{i, e})
 		} else {
 			localIdxs = append(localIdxs, i)
 		}

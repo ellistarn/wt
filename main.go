@@ -98,21 +98,17 @@ func cmdLocal(args []string) {
 		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
 	}
 
-	if !entry.Remote {
+	if entry.Host == "" {
 		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
 		if err := attach(serverURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
 		}
 		printExitRow(serverURL, entry)
 	} else {
-		host, err := ssh.Host()
-		if err != nil {
+		if err := ssh.EnsureTunnel(entry.Host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
 			die("%v", err)
 		}
-		if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
-			die("%v", err)
-		}
-		if err := opencode.EnsureRemoteServer(host); err != nil {
+		if err := opencode.EnsureRemoteServer(entry.Host); err != nil {
 			die("%v", err)
 		}
 		remoteURL := opencode.RemoteServerURL()
@@ -172,7 +168,7 @@ func cmdRemote(args []string) {
 		Name:      name,
 		Dir:       wtDir,
 		Repo:      repo,
-		Remote:    true,
+		Host:      host,
 		CreatedAt: time.Now(),
 	})
 }

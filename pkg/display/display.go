@@ -33,7 +33,7 @@ func PrintTable(rows []Row) {
 		fmt.Println()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tREPO\tTOKENS\tACTIVITY\tAGE\n")
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tREPO\tHOST\tTOKENS\tACTIVITY\tAGE\n")
 
 	now := time.Now()
 	for _, r := range rows {
@@ -48,9 +48,13 @@ func PrintTable(rows []Row) {
 		if title == "" {
 			title = "-"
 		}
-		repo := formatRepo(e.Repo, e.Remote)
+		repo := formatRepo(e.Repo)
+		host := e.Host
+		if host == "" {
+			host = "-"
+		}
 		age := formatDuration(e.CreatedAt, now)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, repo, tokens, activity, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, repo, host, tokens, activity, age)
 	}
 
 	w.Flush()
@@ -105,18 +109,14 @@ func formatTokens(tokens int) string {
 	}
 }
 
-// formatRepo shortens the repo path to <home>/.../last/two and tags remote entries.
-func formatRepo(repo string, remote bool) string {
+// formatRepo shortens the repo path to ~/.../last/three segments.
+func formatRepo(repo string) string {
 	parts := strings.Split(repo, "/")
-	// Shorten: keep first 3 segments (e.g., "", "home", "user"), then .../, then last 2.
-	// Only shorten if there are more than 5 segments (home + at least 3 intermediate + 2 tail).
-	if len(parts) > 5 {
-		head := strings.Join(parts[:3], "/") // e.g., /home/user
-		tail := strings.Join(parts[len(parts)-2:], "/")
-		repo = head + "/.../" + tail
-	}
-	if remote {
-		return "[remote] " + repo
+	// Show last 3 segments with ~/... prefix when the path is long enough.
+	// e.g., /home/user/go/src/github.com/acme/project → ~/.../acme/project
+	if len(parts) > 4 {
+		tail := strings.Join(parts[len(parts)-3:], "/")
+		return "~/.../" + tail
 	}
 	return repo
 }

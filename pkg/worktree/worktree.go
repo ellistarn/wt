@@ -9,10 +9,10 @@ import (
 
 // Entry represents a discovered worktree.
 type Entry struct {
-	Name      string    // branch/worktree name
-	Dir       string    // absolute path on the host where it lives
-	Repo      string    // repo root path
-	Remote    bool      // true if this worktree lives on the remote host
+	Name string // branch/worktree name
+	Dir  string // absolute path on the host where it lives
+	Repo string // repo root path
+	Host string // hostname where the worktree's server runs (empty = local)
 	CreatedAt time.Time // worktree creation time (from filesystem)
 	UpdatedAt time.Time // last session activity (from OpenCode)
 	SessionID string    // most recent OpenCode session ID (empty if none)

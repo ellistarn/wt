@@ -70,10 +70,10 @@ done
 			continue
 		}
 		e := worktree.Entry{
-			Dir:    parts[0],
-			Name:   path.Base(parts[0]),
-			Repo:   parts[2],
-			Remote: true,
+			Dir:  parts[0],
+			Name: path.Base(parts[0]),
+			Repo: parts[2],
+			Host: host,
 		}
 		if len(parts) >= 4 {
 			if ts, err := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64); err == nil {
