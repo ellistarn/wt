@@ -3,7 +3,6 @@ package e2e_test
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -65,20 +64,10 @@ type mockSession struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
+	rootDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(rootDir); err == nil {
+		rootDir = resolved
 	}
-	if resolved, err := filepath.EvalSymlinks(home); err == nil {
-		home = resolved
-	}
-
-	name := fmt.Sprintf("wt-e2e-%d-%d", time.Now().UnixNano(), rand.Intn(100000))
-	rootDir := filepath.Join(home, name)
-	if err := os.MkdirAll(rootDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(rootDir) })
 
 	dataDir := filepath.Join(rootDir, "data")
 	os.MkdirAll(dataDir, 0755)
@@ -191,8 +180,45 @@ func (e *testEnv) startMockServer() {
 		json.NewEncoder(w).Encode(sessions)
 	})
 	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
-		// Handle /session/:id/message — return empty messages
-		json.NewEncoder(w).Encode([]any{})
+		// Extract session ID from /session/<id>/message and look up
+		// whether the session is active (recent UpdatedAt) or idle.
+		// Return a streaming message (completed=0) for active sessions
+		// and a completed message for idle sessions.
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		var sessionID string
+		if len(parts) >= 2 {
+			sessionID = parts[1]
+		}
+
+		completed := 1 // default: completed (idle)
+		e.sessionMu.Lock()
+		for _, s := range e.sessions {
+			if s.ID == sessionID {
+				age := time.Since(time.UnixMilli(s.Time.Updated))
+				if age < 30*time.Second {
+					completed = 0 // streaming (active)
+				}
+				break
+			}
+		}
+		e.sessionMu.Unlock()
+
+		type msgInfo struct {
+			Role   string         `json:"role"`
+			Tokens map[string]int `json:"tokens"`
+			Time   map[string]int `json:"time"`
+		}
+		type msg struct {
+			Info msgInfo `json:"info"`
+		}
+		messages := []msg{
+			{Info: msgInfo{
+				Role:   "assistant",
+				Tokens: map[string]int{"total": 0},
+				Time:   map[string]int{"completed": completed},
+			}},
+		}
+		json.NewEncoder(w).Encode(messages)
 	})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -212,6 +238,7 @@ func (e *testEnv) wt(args ...string) string {
 	cmd := exec.Command(wtBinary, args...)
 	cmd.Dir = e.repo
 	cmd.Env = append(os.Environ(),
+		"HOME="+e.rootDir,
 		"WT_REMOTE_HOST=",
 		"WT_OPENCODE_PORT="+e.mockPort,
 	)

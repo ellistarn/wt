@@ -5,12 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/ellistarn/wt/pkg/discover"
 	"github.com/ellistarn/wt/pkg/display"
 	"github.com/ellistarn/wt/pkg/git"
 	"github.com/ellistarn/wt/pkg/opencode"
@@ -181,43 +180,6 @@ func cmdRemote(args []string) {
 	})
 }
 
-type remoteResult struct {
-	entries []worktree.Entry
-	err     error
-}
-
-// findWorktree discovers all worktrees (local and remote) and returns the one matching name.
-func findWorktree(name string) (worktree.Entry, bool) {
-	host := os.Getenv("WT_REMOTE_HOST")
-
-	localCh := make(chan []worktree.Entry, 1)
-	remoteCh := make(chan remoteResult, 1)
-
-	go func() { localCh <- discover.ListLocal() }()
-	if host != "" {
-		go func() {
-			entries, err := discover.ListRemote(host)
-			remoteCh <- remoteResult{entries, err}
-		}()
-	} else {
-		remoteCh <- remoteResult{}
-	}
-
-	local := <-localCh
-	rr := <-remoteCh
-	if rr.err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
-	}
-
-	all := append(local, rr.entries...)
-	for _, e := range all {
-		if e.Name == name {
-			return e, true
-		}
-	}
-	return worktree.Entry{}, false
-}
-
 // cmdLs handles: wt ls
 func cmdLs(remoteOnly bool) {
 	all, enrichErr := discoverAll(remoteOnly)
@@ -230,241 +192,30 @@ func cmdLs(remoteOnly bool) {
 		fmt.Println("No worktrees found.")
 		return
 	}
+
+	// Classify in parallel
+	statuses := make([]string, len(all))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for i, e := range all {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, entry worktree.Entry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			statuses[idx] = classifyStatus(entry)
+		}(i, e)
+	}
+	wg.Wait()
+
 	rows := make([]display.Row, len(all))
 	for i, e := range all {
 		rows[i] = display.Row{
 			Entry:  e,
-			Status: classifyStatus(e),
+			Status: statuses[i],
 		}
 	}
 	display.PrintTable(rows)
-}
-
-// cmdRm handles: wt rm [name]
-func cmdRm(args []string, remoteOnly bool) {
-	if len(args) > 1 {
-		die("unexpected argument: %s", args[1])
-	}
-	if len(args) == 1 {
-		cmdRmTargeted(args[0])
-	} else {
-		cmdRmBatch(remoteOnly)
-	}
-}
-
-// discoverAll discovers worktrees and enriches them with session data.
-// Returns any enrichment error — callers that make safety decisions must
-// check this; callers that only display can ignore it.
-func discoverAll(remoteOnly bool) ([]worktree.Entry, error) {
-	host := os.Getenv("WT_REMOTE_HOST")
-
-	localCh := make(chan []worktree.Entry, 1)
-	remoteCh := make(chan remoteResult, 1)
-
-	if !remoteOnly {
-		go func() { localCh <- discover.ListLocal() }()
-	} else {
-		localCh <- nil
-	}
-
-	if host != "" {
-		go func() {
-			entries, err := discover.ListRemote(host)
-			remoteCh <- remoteResult{entries, err}
-		}()
-	} else {
-		if remoteOnly {
-			die("WT_REMOTE_HOST is not set\n\nRemote operations require an SSH host. Set the environment variable:\n\n  export WT_REMOTE_HOST=your-dev-desktop")
-		}
-		remoteCh <- remoteResult{}
-	}
-
-	// Discover in parallel, then fetch and enrich.
-	local := <-localCh
-	rr := <-remoteCh
-	if rr.err != nil {
-		if remoteOnly {
-			die("%v", rr.err)
-		}
-		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
-	}
-
-	all := append(local, rr.entries...)
-	fetchRepos(all)
-
-	// Enrich using sub-slices of all so in-place mutations are visible
-	// in the returned slice.
-	localEntries := all[:len(local)]
-	remoteEntries := all[len(local):]
-
-	var enrichErr error
-	if !remoteOnly {
-		if err := opencode.EnsureLocalServer(); err != nil {
-			enrichErr = fmt.Errorf("local server: %w", err)
-		} else if err := opencode.Enrich(opencode.LocalServerURL(), localEntries); err != nil {
-			enrichErr = fmt.Errorf("local session query: %w", err)
-		}
-	}
-	if host != "" && rr.err == nil {
-		if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
-			enrichErr = fmt.Errorf("SSH tunnel: %w", err)
-		} else if err := opencode.EnsureRemoteServer(host); err != nil {
-			enrichErr = fmt.Errorf("remote server: %w", err)
-		} else if err := opencode.Enrich(opencode.RemoteServerURL(), remoteEntries); err != nil {
-			enrichErr = fmt.Errorf("remote session query: %w", err)
-		}
-	}
-
-	return all, enrichErr
-}
-
-// hostFor returns the SSH host for an entry, or "" for local entries.
-func hostFor(e worktree.Entry) string {
-	if e.Remote {
-		return os.Getenv("WT_REMOTE_HOST")
-	}
-	return ""
-}
-
-// fetchRepos runs git fetch once per unique repo to ensure remote-tracking
-// refs are current. Best-effort — fetch failures are ignored.
-func fetchRepos(entries []worktree.Entry) {
-	type key struct{ host, repo string }
-	seen := make(map[key]bool)
-	for _, e := range entries {
-		k := key{hostFor(e), e.Repo}
-		if !seen[k] {
-			seen[k] = true
-			git.Fetch(k.host, k.repo)
-		}
-	}
-}
-
-// classifyStatus returns the single highest-priority status for a worktree.
-// Priority: attached > working > dirty > merged > committed > idle > stale > empty.
-func classifyStatus(e worktree.Entry) string {
-	// Session states — active use takes priority
-	if e.Attached {
-		return "attached"
-	}
-	if e.Status == "working" {
-		return "working"
-	}
-
-	// Git states — data safety
-	host := hostFor(e)
-	if !git.IsClean(host, e.Dir) {
-		return "dirty"
-	}
-	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
-	if unique > 0 {
-		if git.IsMerged(host, e.Repo, e.Name) {
-			return "merged"
-		}
-		return "committed"
-	}
-
-	// Session lifecycle — no unique commits, clean tree
-	if e.SessionID == "" {
-		return "empty"
-	}
-	if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
-		return "stale"
-	}
-	return "idle"
-}
-
-// isRemovable returns true if a status indicates the worktree is safe to remove.
-func isRemovable(status string) bool {
-	return status == "merged" || status == "stale" || status == "empty"
-}
-
-func cmdRmBatch(remoteOnly bool) {
-	all, enrichErr := discoverAll(remoteOnly)
-	if enrichErr != nil {
-		die("cannot determine session status: %v", enrichErr)
-	}
-
-	if len(all) == 0 {
-		fmt.Println("No worktrees found.")
-		return
-	}
-
-	type result struct {
-		entry  worktree.Entry
-		status string
-		errMsg string
-	}
-	var results []result
-	var removeCount int
-
-	for _, e := range all {
-		status := classifyStatus(e)
-		var errMsg string
-
-		if isRemovable(status) {
-			host := hostFor(e)
-			if err := git.WorktreeRemove(host, e.Repo, e.Name); err != nil {
-				errMsg = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
-			} else {
-				status = "removed"
-				removeCount++
-			}
-		}
-
-		results = append(results, result{e, status, errMsg})
-	}
-
-	// Sort: removed first, then by activity (newest first)
-	sort.SliceStable(results, func(i, j int) bool {
-		ri, rj := results[i].status == "removed", results[j].status == "removed"
-		if ri != rj {
-			return ri
-		}
-		ti, tj := results[i].entry.UpdatedAt, results[j].entry.UpdatedAt
-		if !ti.IsZero() && !tj.IsZero() {
-			return ti.After(tj)
-		}
-		if !ti.IsZero() {
-			return true
-		}
-		return !tj.IsZero() && false
-	})
-
-	rows := make([]display.Row, len(results))
-	for i, r := range results {
-		rows[i] = display.Row{
-			Entry:  r.entry,
-			Status: r.status,
-		}
-	}
-	display.PrintTable(rows)
-
-	for _, r := range results {
-		if r.errMsg != "" {
-			fmt.Fprintf(os.Stderr, "ERROR: %s: %s\n", r.entry.Name, r.errMsg)
-		}
-	}
-
-	if removeCount == 0 {
-		fmt.Println()
-		fmt.Println("Nothing to remove. Use 'wt rm <name>' to target specific worktrees.")
-	}
-}
-
-func cmdRmTargeted(name string) {
-	entry, ok := findWorktree(name)
-	if !ok {
-		die("worktree %q not found", name)
-	}
-	host := hostFor(entry)
-	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
-		die("%v", err)
-	}
-	display.PrintTable([]display.Row{{
-		Entry:  entry,
-		Status: "removed",
-	}})
 }
 
 func printUsage() {
