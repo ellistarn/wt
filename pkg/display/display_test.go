@@ -61,19 +61,16 @@ func TestFormatDuration(t *testing.T) {
 
 func TestFormatRepo(t *testing.T) {
 	tests := []struct {
-		repo   string
-		remote bool
-		want   string
+		repo string
+		want string
 	}{
-		{"/home/user/src/github.com/acme/project", false, "/home/user/.../acme/project"},
-		{"/home/user/src/github.com/acme/project", true, "[remote] /home/user/.../acme/project"},
-		{"/short/path", false, "/short/path"},
-		{"/short/path", true, "[remote] /short/path"},
+		{"/home/user/src/github.com/acme/project", "~/.../github.com/acme/project"},
+		{"/short/path", "/short/path"},
 	}
 	for _, tt := range tests {
-		got := formatRepo(tt.repo, tt.remote)
+		got := formatRepo(tt.repo)
 		if got != tt.want {
-			t.Errorf("formatRepo(%q, %v) = %q, want %q", tt.repo, tt.remote, got, tt.want)
+			t.Errorf("formatRepo(%q) = %q, want %q", tt.repo, got, tt.want)
 		}
 	}
 }
@@ -129,7 +126,7 @@ func TestPrintTable(t *testing.T) {
 
 	// Header should have the right columns.
 	header := lines[0]
-	for _, col := range []string{"WORKTREE", "STATUS", "TITLE", "ACTIVITY", "TOKENS", "REPO", "AGE"} {
+	for _, col := range []string{"WORKTREE", "STATUS", "TITLE", "ACTIVITY", "TOKENS", "REPO", "HOST", "AGE"} {
 		if !strings.Contains(header, col) {
 			t.Errorf("header missing column %q: %s", col, header)
 		}

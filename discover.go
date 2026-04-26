@@ -142,10 +142,7 @@ func discoverAll(remoteOnly, fetch bool) ([]worktree.Entry, fetchResult, error) 
 
 // hostFor returns the SSH host for an entry, or "" for local entries.
 func hostFor(e worktree.Entry) string {
-	if e.Remote {
-		return os.Getenv("WT_REMOTE_HOST")
-	}
-	return ""
+	return e.Host
 }
 
 // fetchResult holds per-repo done channels from a non-blocking fetch.
