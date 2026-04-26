@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -102,83 +101,48 @@ func QuerySession(serverURL, directory string) (*Session, error) {
 }
 
 // Enrich enriches worktree entries with session data from the OpenCode server.
-// Fetches message status for sessions that may be actively streaming.
+// Queries each entry's session by directory (crossing project boundaries) and
+// fetches message status for sessions that may be actively streaming.
 func Enrich(serverURL string, entries []worktree.Entry) error {
 	if err := checkHealthFast(serverURL); err != nil {
 		return err
 	}
 
-	// Bulk fetch ALL sessions (single HTTP call).
-	sessions, err := listSessions(serverURL, "")
-	if err != nil {
-		return err
-	}
-
-	// Match sessions to entries by worktree name — the unique timestamp-based
-	// ID in the /.worktrees/<name> path. Matching by name instead of full path
-	// avoids mismatches from symlink differences across hosts (e.g.
-	// /local/home/user/... vs /home/user/...).
-	// First-per-name wins (sessions are already sorted by updated desc).
-	byName := make(map[string]*Session, len(sessions))
-	for i := range sessions {
-		if name := worktreeName(sessions[i].Directory); name != "" {
-			if _, exists := byName[name]; !exists {
-				byName[name] = &sessions[i]
-			}
-		}
-	}
-
-	for i := range entries {
-		s, ok := byName[entries[i].Name]
-		if !ok {
-			continue
-		}
-		entries[i].SessionID = s.ID
-		entries[i].Title = s.Title
-		entries[i].UpdatedAt = time.UnixMilli(s.Time.Updated)
-
-		if time.Since(entries[i].UpdatedAt) > StaleThreshold {
-			entries[i].Status = "stale"
-		}
-	}
-
-	// For non-stale entries with sessions, fetch message status in parallel (bounded to 8).
-	type statusResult struct {
-		index  int
-		status sessionStatus
-	}
-	var toFetch []int
-	for i := range entries {
-		if entries[i].SessionID != "" && entries[i].Status != "stale" {
-			toFetch = append(toFetch, i)
-		}
-	}
-
-	results := make([]statusResult, len(toFetch))
+	// Query session + message status per entry in parallel (bounded to 8).
+	// Per-directory queries cross OpenCode project boundaries, unlike the
+	// bulk /session endpoint which is scoped to the active project.
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
-	for j, idx := range toFetch {
+	for i := range entries {
 		wg.Add(1)
-		go func(j, idx int) {
+		go func(i int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[j] = statusResult{
-				index:  idx,
-				status: fetchSessionStatus(serverURL, entries[idx].SessionID),
+
+			s, _ := QuerySession(serverURL, entries[i].Dir)
+			if s == nil {
+				return
 			}
-		}(j, idx)
+			entries[i].SessionID = s.ID
+			entries[i].Title = s.Title
+			entries[i].UpdatedAt = time.UnixMilli(s.Time.Updated)
+
+			if time.Since(entries[i].UpdatedAt) > StaleThreshold {
+				entries[i].Status = "stale"
+				return
+			}
+
+			status := fetchSessionStatus(serverURL, entries[i].SessionID)
+			entries[i].Tokens = status.tokens
+			if status.streaming {
+				entries[i].Status = "working"
+			} else {
+				entries[i].Status = "idle"
+			}
+		}(i)
 	}
 	wg.Wait()
-
-	for _, r := range results {
-		entries[r.index].Tokens = r.status.tokens
-		if r.status.streaming {
-			entries[r.index].Status = "working"
-		} else {
-			entries[r.index].Status = "idle"
-		}
-	}
 
 	// Detect locally attached TUI clients.
 	attached := AttachedDirs()
@@ -250,19 +214,6 @@ func fetchSessionStatus(serverURL, sessionID string) sessionStatus {
 		}
 	}
 	return result
-}
-
-// worktreeName extracts the worktree name from a path containing /.worktrees/<name>.
-// Returns "" if the path doesn't match the pattern.
-func worktreeName(dir string) string {
-	const marker = "/.worktrees/"
-	if i := strings.LastIndex(dir, marker); i >= 0 {
-		name := dir[i+len(marker):]
-		if name != "" && !strings.Contains(name, "/") {
-			return name
-		}
-	}
-	return ""
 }
 
 func httpGet(u string) (*http.Response, error) {
