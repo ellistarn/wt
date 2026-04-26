@@ -34,8 +34,9 @@ session has been idle for more than 12 hours. A worktree with no session has no
 status.
 
 An **OpenCode server** is a persistent process running `opencode serve`. One
-server hosts all worktrees across all repos. Every API endpoint accepts a
-`directory` parameter to scope requests to a specific worktree. TUI clients are
+server per machine hosts all worktrees across all repos. The bulk session API
+(`GET /session`) is scoped to the active project, but directory-filtered queries
+(`GET /session?directory=<dir>`) cross project boundaries. TUI clients are
 stateless -- they re-fetch everything on connect.
 
 Multiple TUI clients can attach to the same server and session simultaneously.
@@ -109,8 +110,10 @@ same server without starting duplicates. If someone manually starts
 crash; the next `wt` invocation restarts it.
 
 Both `wt`-managed and user-started servers share the same data directory
-(~/.opencode or configured). Sessions created on any port are visible to all
-servers — OpenCode servers are stateless API layers over SQLite.
+(~/.opencode or configured). Sessions are stored globally in SQLite, but the
+bulk session API filters by the active project. Directory-filtered queries
+cross project boundaries, which is how `wt ls` retrieves sessions for
+worktrees across all repos.
 
 If the server dies mid-agent, the next `wt` command restarts it. OpenCode
 sessions are crash-tolerant — incomplete messages are treated as interrupted
@@ -181,13 +184,15 @@ and remote worktrees (all repos on the dev desktop) are discovered concurrently
 and merged into a single table sorted by most recent activity.
 
 Session metadata is fetched from the OpenCode server API, not from the database
-directly. For each server (local and remote):
+directly. For each server (local and remote), per worktree (parallel, bounded to
+8 concurrent):
 
-1. `GET /session?limit=1000` — single bulk fetch of all sessions. Matched to
-   worktrees client-side by directory. Eliminates per-worktree HTTP calls.
-2. `GET /session/<id>/message` — per session (parallel, bounded to 8
-   concurrent), reads the last assistant message's total token count (context
-   window size) and derives working/idle from whether that message has completed.
+1. `GET /session?directory=<dir>` — fetches the most recent session for that
+   worktree. Per-directory queries cross OpenCode project boundaries, unlike the
+   bulk `GET /session` endpoint which is scoped to the active project.
+2. `GET /session/<id>/message` — reads the last assistant message's total token
+   count (context window size) and derives working/idle from whether that message
+   has completed.
 
 Working/idle detection uses the last assistant message's `completed` timestamp:
 - `completed == null` → working (streaming)
