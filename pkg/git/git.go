@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ellistarn/wt/pkg/ssh"
 )
@@ -78,9 +79,24 @@ func runGit(host, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
+// defaultBranchCache avoids redundant git calls for the same repo.
+// Key: "host\x00repo", Value: branch name string.
+var defaultBranchCache sync.Map
+
 // DefaultBranch returns the default branch name (e.g., "main" or "master")
 // by checking refs/remotes/origin/HEAD, then probing main and master.
+// Results are cached per (host, repo) for the lifetime of the process.
 func DefaultBranch(host, repo string) string {
+	cacheKey := host + "\x00" + repo
+	if v, ok := defaultBranchCache.Load(cacheKey); ok {
+		return v.(string)
+	}
+	result := defaultBranchUncached(host, repo)
+	defaultBranchCache.Store(cacheKey, result)
+	return result
+}
+
+func defaultBranchUncached(host, repo string) string {
 	out, err := runGit(host, repo, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err == nil {
 		// refs/remotes/origin/main -> main
