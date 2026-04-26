@@ -75,6 +75,36 @@ func TestFormatRepo(t *testing.T) {
 	}
 }
 
+func TestFormatURI(t *testing.T) {
+	tests := []struct {
+		host string
+		repo string
+		want string
+	}{
+		// Local worktree (empty host) gets localhost.
+		{"", "/home/user/src/github.com/acme/project", "localhost:5096~/.../github.com/acme/project"},
+		// Remote worktree keeps the provided host.
+		{"devbox", "/home/user/src/github.com/acme/project", "devbox:5096~/.../github.com/acme/project"},
+		// Short repo path passes through unshortened.
+		{"", "/short/path", "localhost:5096/short/path"},
+	}
+	for _, tt := range tests {
+		got := formatURI(tt.host, tt.repo)
+		if got != tt.want {
+			t.Errorf("formatURI(%q, %q) = %q, want %q", tt.host, tt.repo, got, tt.want)
+		}
+	}
+}
+
+func TestFormatURICustomPort(t *testing.T) {
+	t.Setenv("WT_OPENCODE_PORT", "9999")
+	got := formatURI("", "/short/path")
+	want := "localhost:9999/short/path"
+	if got != want {
+		t.Errorf("formatURI with WT_OPENCODE_PORT=9999: got %q, want %q", got, want)
+	}
+}
+
 func TestPrintTable(t *testing.T) {
 	now := time.Now()
 	rows := []Row{
@@ -126,7 +156,7 @@ func TestPrintTable(t *testing.T) {
 
 	// Header should have the right columns.
 	header := lines[0]
-	for _, col := range []string{"WORKTREE", "STATUS", "TITLE", "ACTIVITY", "TOKENS", "REPO", "HOST", "AGE"} {
+	for _, col := range []string{"WORKTREE", "STATUS", "TITLE", "URI", "TOKENS", "ACTIVITY", "AGE"} {
 		if !strings.Contains(header, col) {
 			t.Errorf("header missing column %q: %s", col, header)
 		}
