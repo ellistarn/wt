@@ -523,6 +523,78 @@ func TestLs_RegressionMultiCommitSquash(t *testing.T) {
 	}
 }
 
+// TestLs_RegressionRebaseMerge verifies that merges producing zero unique
+// commits are detected. When a branch is rebased onto main (identical SHAs
+// adopted) or merged via --no-ff (commits become ancestors of the merge
+// commit), rev-list sees zero unique commits. The behind-upstream check
+// detects this: the branch tip is a proper ancestor of upstream. Requires
+// a session — a worktree with no session is classified as empty, not merged.
+func TestLs_RegressionRebaseMerge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a branch with a commit
+	wt := env.addWorktree("rebase-merged")
+	env.commitFile(wt, "r.txt", "rebase content", "rebase work")
+	env.push("rebase-merged")
+	env.createIdleSession(wt)
+
+	// Simulate rebase merge: fast-forward main to include the branch's commit
+	gitCmd(t, env.repo, "checkout", "main")
+	gitCmd(t, env.repo, "rebase", "rebase-merged")
+	gitCmd(t, env.repo, "push", "origin", "main")
+	gitCmd(t, env.repo, "fetch", "origin")
+
+	// After rebase merge, advance main further so the branch is behind
+	env.commitFile(env.repo, "extra.txt", "more main work", "main advance")
+	gitCmd(t, env.repo, "push", "origin", "main")
+	gitCmd(t, env.repo, "fetch", "origin")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "rebase-merged") || !strings.Contains(out, "merged *") {
+		t.Error("rebase-merged worktree should be classified as merged *")
+	}
+}
+
+// TestLs_RegressionRegularMergeWithSession verifies that a regular merge
+// commit (--no-ff) with a session is detected as merged. After the merge,
+// the branch's commits are ancestors of the merge commit on main, so
+// rev-list sees zero unique commits. The behind-upstream check fires because
+// the branch is behind upstream and has a session.
+func TestLs_RegressionRegularMergeWithSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("regular-merged")
+	env.commitFile(wt, "r.txt", "regular content", "regular work")
+	env.push("regular-merged")
+	env.createIdleSession(wt)
+
+	// Regular merge commit to main
+	env.mergeToMain("regular-merged")
+	gitCmd(t, env.repo, "checkout", "main")
+
+	// Advance main so the branch is behind
+	env.commitFile(env.repo, "extra.txt", "main work", "main advance")
+	gitCmd(t, env.repo, "push", "origin", "main")
+	gitCmd(t, env.repo, "fetch", "origin")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "regular-merged") || !strings.Contains(out, "merged *") {
+		t.Error("regular-merged worktree with session should be classified as merged *")
+	}
+}
+
 func TestLs_SessionActiveStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
