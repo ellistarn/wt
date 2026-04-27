@@ -32,6 +32,33 @@ func UniqueCommitCount(host, repo, branch string) int {
 	return n
 }
 
+// IsBehindUpstream returns true if the branch tip is a proper ancestor of
+// its upstream — i.e., the branch is strictly behind (not at the same commit).
+// This detects merges where the branch's commits became reachable from
+// upstream: regular merge commits (--no-ff), fast-forward merges, and local
+// rebases where the upstream adopted the branch's commits with identical SHAs.
+// In all these cases, rev-list sees zero unique commits because the branch
+// has not diverged from the upstream's ancestry graph.
+func IsBehindUpstream(host, repo, branch string) bool {
+	upstream, err := UpstreamRef(host, repo, branch)
+	if err != nil {
+		return false
+	}
+	branchRev, err := runGit(host, repo, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		return false
+	}
+	upstreamRev, err := runGit(host, repo, "rev-parse", upstream)
+	if err != nil {
+		return false
+	}
+	if branchRev == upstreamRev {
+		return false // at upstream tip, not behind
+	}
+	_, err = runGit(host, repo, "merge-base", "--is-ancestor", branch, upstream)
+	return err == nil
+}
+
 // IsMerged returns true if the branch's changes are incorporated into
 // its upstream tracking ref (regular merge, fast-forward, or squash merge).
 //
@@ -155,6 +182,7 @@ type ClassifyResult struct {
 	Clean  bool // no modified, staged, or untracked files
 	Unique int  // commits on branch not on its upstream
 	Merged bool // branch changes incorporated into its upstream
+	Behind bool // branch is a proper ancestor of its upstream (rebase merge)
 }
 
 // ClassifyBatch classifies multiple remote worktrees in a single SSH call.
@@ -189,7 +217,7 @@ while IFS=$'\t' read -r dir repo branch; do
     # Get upstream tracking ref for this branch
     upstream=$(git -C "$repo" for-each-ref --format='%(upstream:short)' "refs/heads/$branch" 2>/dev/null)
     if [ -z "$upstream" ]; then
-        printf '%s\t%s\t%s\n' "$clean" "0" "false"
+        printf '%s\t%s\t%s\t%s\n' "$clean" "0" "false" "false"
         continue
     fi
 
@@ -223,7 +251,19 @@ while IFS=$'\t' read -r dir repo branch; do
         fi
     fi
 
-    printf '%s\t%s\t%s\n' "$clean" "$unique" "$merged"
+    # IsBehindUpstream (only if unique == 0): detect rebase/ff merges
+    behind=false
+    if [ "$unique" -eq 0 ] 2>/dev/null; then
+        branch_rev=$(git -C "$repo" rev-parse "refs/heads/$branch" 2>/dev/null) || branch_rev=""
+        upstream_rev=$(git -C "$repo" rev-parse "$upstream" 2>/dev/null) || upstream_rev=""
+        if [ -n "$branch_rev" ] && [ -n "$upstream_rev" ] && [ "$branch_rev" != "$upstream_rev" ]; then
+            if git -C "$repo" merge-base --is-ancestor "$branch" "$upstream" 2>/dev/null; then
+                behind=true
+            fi
+        fi
+    fi
+
+    printf '%s\t%s\t%s\t%s\n' "$clean" "$unique" "$merged" "$behind"
 done << 'ENTRIES'
 ` + heredoc.String() + `ENTRIES
 `
@@ -238,13 +278,16 @@ done << 'ENTRIES'
 		if i >= len(entries) {
 			break
 		}
-		parts := strings.SplitN(line, "\t", 3)
+		parts := strings.SplitN(line, "\t", 4)
 		if len(parts) < 3 {
 			continue
 		}
 		results[i].Clean = parts[0] == "true"
 		results[i].Unique, _ = strconv.Atoi(parts[1])
 		results[i].Merged = parts[2] == "true"
+		if len(parts) >= 4 {
+			results[i].Behind = parts[3] == "true"
+		}
 	}
 	return results, nil
 }

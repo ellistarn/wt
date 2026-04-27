@@ -22,6 +22,12 @@ A **worktree** is a git worktree at `<repo>/.worktrees/<name>`, where `name`
 equals the branch name. The worktree directory is the primary key. Worktrees are
 created per unit of work and cleaned up separately when the branch lands.
 
+The **root branch** is whatever branch the repo root has checked out at worktree
+creation time (typically `main`). Each worktree records `origin/<root-branch>` as
+its merge target. Diff, status, and merge detection all compare the worktree's
+branch against this target. The value is set once at creation and does not change
+if the repo root later checks out a different branch.
+
 A **session** is an OpenCode conversation bound to a worktree directory. Sessions
 persist on the server and carry a title (auto-generated from the first prompt)
 and full message history. A worktree can have multiple sessions; the most recent
@@ -126,9 +132,8 @@ history, and reattaching resumes the session.
 Create or resume a worktree.
 
 - No args: pull the current branch to ensure the worktree starts from the
-  latest remote state. Create a new worktree with its upstream tracking ref set
-  to `origin/<root-branch>`, where root-branch is whatever the repo root has
-  checked out. Attach. Pull again on exit so the exit summary reflects the
+  latest remote state. Create a new worktree with `origin/<root-branch>` as its
+  merge target. Attach. Pull again on exit so the exit summary reflects the
   latest remote state.
 - With `name`: pull the repo's current branch (best-effort) to keep it fresh
   for future worktree creation and merge detection. Resume
@@ -172,15 +177,29 @@ state from `wt ls`.
 landed, the session went dormant with no commits, or no session was ever
 created. All other statuses are kept. `wt ls` is the preview.
 
-Merge detection uses the branch's upstream tracking ref (set at creation time)
-as the target. Three-phase: (1) ancestry check (`merge-base --is-ancestor`)
-catches regular and fast-forward merges; (2) merge-tree simulation
-(`merge-tree --write-tree`, requires git 2.38+) catches squash merges when the
-branch merges cleanly; (3) patch-id comparison catches squash merges when
-merge-tree produces conflicts (e.g., the upstream has moved forward and later
-commits touch the same files). Phase 3 computes the branch's aggregate diff
-patch-id and searches the upstream for a commit with a matching patch-id. This
-works for both single-commit and multi-commit squash merges.
+Merge detection compares the worktree's branch against `origin/<root-branch>`.
+Detection splits into two paths based on whether the branch has commits not
+reachable from the target (`git rev-list --count target..branch`).
+
+When the branch has **unique commits** (count > 0), three phases run in order:
+(1) ancestry check (`merge-base --is-ancestor`) — the branch tip is a graph
+ancestor of the target, meaning a merge commit incorporated it; (2) merge-tree
+simulation (`merge-tree --write-tree`, requires git 2.38+) — simulating the
+merge produces the same tree as the target, meaning the branch's diff is already
+present (catches squash merges and GitHub rebase merges, which create new SHAs);
+(3) patch-id comparison — the branch's aggregate diff has the same patch-id as a
+commit on the target (catches squash merges when merge-tree produces conflicts
+because the target moved forward). Phase 3 scans at most 500 commits on the
+target range to bound cost.
+
+When the branch has **zero unique commits** (count = 0), the branch's commits
+are already reachable from the target — either because a merge commit made them
+ancestors, or because the target adopted them with identical SHAs (fast-forward).
+In this case the three-phase check is not applicable (there is nothing unique to
+match against). Instead, a behind-target check fires: if the branch tip is a
+proper ancestor of the target (behind, not at the same commit) and the worktree
+has a session, it is classified as merged. A branch at exactly the target tip has
+not diverged and is classified by session lifecycle (idle, stale, or empty).
 
 All commands pull from origin (`git pull --ff-only --prune`) to keep the
 current branch fresh for accurate merge detection and status classification.
@@ -193,10 +212,8 @@ is not touched.
 
 Show the changes on a worktree's branch. Pulls the repo's current branch
 (best-effort) so the diff is computed against the latest remote state. Computes
-the merge-base between the branch's upstream tracking ref and HEAD, then diffs
-against it, capturing both committed and uncommitted changes. The upstream is set
-at worktree creation time to `origin/<root-branch>` — the remote-tracking ref
-for whatever branch the repo root had checked out.
+the merge-base between `origin/<root-branch>` and HEAD, then diffs against it,
+capturing both committed and uncommitted changes.
 
 Output: `--stat` summary printed directly (stays in scrollback), then the full
 diff piped through `less -R` when stdout is a terminal. When piped (e.g., to an
@@ -229,7 +246,7 @@ reliable way to distinguish a long-running response from a crash orphan.
 crashed session) is preferable to a false negative (hiding active work).
 
 Git state is determined per worktree (parallel, bounded to 8 concurrent) by
-checking the working tree and branch against its upstream tracking ref.
+checking the working tree and branch against `origin/<root-branch>`.
 
 ```
 WORKTREE            STATUS       TITLE                           REPO                              TOKENS  ACTIVITY  AGE
@@ -260,17 +277,23 @@ removed by `wt rm`.
 | `attached` | TUI client connected |
 | `working` | Agent streaming (last assistant message incomplete) |
 | `dirty` | Uncommitted changes in working tree |
-| `merged *` | Changes incorporated into upstream |
-| `committed` | Unique commits not in upstream |
-| `idle` | Session exists, no unique commits, recent |
-| `stale *` | Session inactive >4 hours, no unique commits |
+| `merged *` | Changes incorporated into `origin/<root-branch>` |
+| `committed` | Unique commits not yet in `origin/<root-branch>` |
 | `empty *` | No session was ever created |
+| `stale *` | Session inactive >4 hours, no unique commits |
+| `idle` | Session exists, no unique commits, recent |
 
 Session states (`attached`, `working`) take priority — the worktree is in active
 use. Git states (`dirty`, `merged`, `committed`) take priority next — they
-describe the safety of the work. Session lifecycle states (`idle`, `stale`,
-`empty`) apply when the working tree is clean and the branch has no unique
-commits. Attachment is detected by scanning local `opencode attach` processes.
+describe the safety of the work. `merged` covers both detection paths: unique
+commits detected as landed (three-phase), and zero unique commits with the branch
+behind the target (behind-target check). Session lifecycle states (`empty`,
+`stale`, `idle`) apply when the working tree is clean and the branch has no
+unique commits. A worktree with no session is `empty` regardless of the branch's
+position relative to the target — it never had work to merge. A worktree with a
+session whose branch is behind the target is `merged` — the work landed via a
+merge that made the branch's commits reachable from the target. Attachment is
+detected by scanning local `opencode attach` processes.
 
 ## Reconnection
 
@@ -282,7 +305,7 @@ commits. Attachment is detected by scanning local `opencode attach` processes.
 
 - The repo root checkout is clean. Worktree creation pulls the current branch,
   so conflicts or uncommitted changes would cause a failure. The checked-out
-  branch determines the upstream for new worktrees.
+  branch becomes the root branch for the new worktree.
 - The remote host is reachable via SSH.
 - `opencode` is available on PATH (locally and on the remote host).
 

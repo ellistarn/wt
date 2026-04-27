@@ -85,7 +85,7 @@ func classifyAll(all []worktree.Entry, pulled pullResult) []string {
 			}
 			for j, r := range results {
 				idx := batchIdxs[j]
-				statuses[idx] = classifyFromResult(all[idx], r.Clean, r.Unique, r.Merged)
+				statuses[idx] = classifyFromResult(all[idx], r.Clean, r.Unique, r.Merged, r.Behind)
 			}
 		}(host, entries)
 	}
@@ -108,7 +108,7 @@ func classifyAll(all []worktree.Entry, pulled pullResult) []string {
 }
 
 // classifyStatus returns the single highest-priority status for a worktree.
-// Priority: attached > working > dirty > merged > committed > idle > stale > empty.
+// Priority: attached > working > dirty > merged/committed > empty > merged(behind) > stale > idle.
 func classifyStatus(e worktree.Entry) string {
 	// Session states — active use takes priority
 	if e.Attached {
@@ -135,6 +135,18 @@ func classifyStatus(e worktree.Entry) string {
 	if e.SessionID == "" {
 		return "empty"
 	}
+
+	// Merged with zero unique commits: the branch's commits are reachable
+	// from upstream (regular merge commit, fast-forward, or local rebase).
+	// rev-list sees zero unique commits because the branch hasn't diverged
+	// from upstream's ancestry graph. Detect by checking if the branch is
+	// a proper ancestor of upstream (behind, not at the same commit).
+	// Only checked when a session exists — a worktree with no session
+	// never had work to merge.
+	if git.IsBehindUpstream(host, e.Repo, e.Name) {
+		return "merged"
+	}
+
 	if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
 		return "stale"
 	}
@@ -145,7 +157,7 @@ func classifyStatus(e worktree.Entry) string {
 // (from a batch SSH call) instead of making individual git calls.
 // Unlike classifyStatus, this does NOT check Attached or working status —
 // callers must handle those cases before calling this function.
-func classifyFromResult(e worktree.Entry, clean bool, unique int, merged bool) string {
+func classifyFromResult(e worktree.Entry, clean bool, unique int, merged bool, behind bool) string {
 	if !clean {
 		return "dirty"
 	}
@@ -157,6 +169,9 @@ func classifyFromResult(e worktree.Entry, clean bool, unique int, merged bool) s
 	}
 	if e.SessionID == "" {
 		return "empty"
+	}
+	if behind {
+		return "merged"
 	}
 	if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
 		return "stale"
