@@ -93,7 +93,7 @@ func EnsureRemoteServer(host string) error {
 		return fmt.Errorf("failed to start remote opencode server: %w", err)
 	}
 
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 50; i++ {
 		if healthProbe(tunnelURL) == nil {
 			return nil
 		}

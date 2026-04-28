@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -26,11 +27,15 @@ func Host() (string, error) {
 const controlPath = "/tmp/wt-ssh-%r@%h:%p"
 
 // Run executes a command on the remote host via SSH, passing cmd via stdin to bash.
-// Reuses the tunnel's mux socket if available; falls back to a direct connection.
+// Reuses the tunnel's mux socket if the master is alive; otherwise connects
+// directly without the mux to avoid hanging on a stale control socket.
 func Run(host, cmd string) (string, error) {
-	c := exec.Command("ssh",
-		"-o", "ControlPath="+controlPath,
-		host, "bash")
+	args := []string{"-o", "ConnectTimeout=10"}
+	if muxMasterAlive(host) {
+		args = append(args, "-o", "ControlPath="+controlPath)
+	}
+	args = append(args, host, "bash")
+	c := exec.Command("ssh", args...)
 	c.Stdin = strings.NewReader(cmd)
 	out, err := c.CombinedOutput()
 	if err != nil {
@@ -82,13 +87,24 @@ func ToRemotePath(localPath, remoteHome string) (string, error) {
 // host's <remotePort> is running. If the tunnel is already up, this is a no-op.
 // Otherwise, starts ssh -fNL <localPort>:localhost:<remotePort> <host> and waits
 // for it to come up. The tunnel is long-lived and shared across wt invocations.
+//
+// Before starting a new tunnel, any stale mux master and control socket are
+// cleaned up. The tunnel uses SSH keepalives so dead connections are detected
+// and torn down automatically rather than lingering as zombies.
 func EnsureTunnel(host string, localPort, remotePort int) error {
-	if tunnelHealthy(localPort) {
+	if tunnelHealthy(localPort) && muxMasterAlive(host) {
 		return nil
 	}
+	// Tunnel is down or mux master is stale. Clean up before starting fresh.
+	cleanupStaleTunnel(host)
+
 	cmd := exec.Command("ssh",
 		"-o", "ControlMaster=yes",
 		"-o", "ControlPath="+controlPath,
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ConnectTimeout=10",
 		"-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
 	cmdlog.LogCmd(fmt.Sprintf("ssh -fNL %d:localhost:%d %s", localPort, remotePort, host))
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -117,4 +133,35 @@ func tunnelHealthy(port int) bool {
 	}
 	conn.Close()
 	return true
+}
+
+// muxMasterAlive checks whether the SSH mux master process is still running
+// by sending a "check" command through the control socket. Times out after
+// 2 seconds to avoid hanging on a stale socket with no live master.
+func muxMasterAlive(host string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx,
+		"ssh",
+		"-o", "ControlPath="+controlPath,
+		"-O", "check", host)
+	return cmd.Run() == nil
+}
+
+// cleanupStaleTunnel tears down any existing mux master for the given host
+// and removes the control socket if it's stale. This prevents new tunnel
+// attempts from failing with "address already in use" on the socket or
+// silently routing through a dead master.
+func cleanupStaleTunnel(host string) {
+	// Gracefully ask the mux master to exit.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exit := exec.CommandContext(ctx,
+		"ssh",
+		"-o", "ControlPath="+controlPath,
+		"-O", "exit", host)
+	_ = exit.Run()
+
+	// Give the master a moment to release the port and socket.
+	time.Sleep(100 * time.Millisecond)
 }
