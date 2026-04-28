@@ -63,5 +63,3 @@ Flags:
   -h, --help                Show this help
 ```
 
-`wt ls` is the preview for `wt rm`. Merge detection handles regular merges,
-squash merges, and rebase merges against `origin/<root-branch>`.
