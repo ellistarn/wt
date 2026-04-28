@@ -67,17 +67,18 @@ latest remote state and merge detection stays accurate against a fresh upstream.
 
 `wt` glues together Git, OpenCode, and SSH.
 
-**OpenCode** — `wt` auto-starts `opencode serve` as a detached process on first
-use, locally and on the remote host via SSH. One server per machine, shared
-across all worktrees and repos. Sessions persist in the OpenCode database — `wt
-rm` deletes the worktree and branch but never touches session history. Reattach
-with `wt <name>`; the TUI reconnects and loads full history, including work the
-agent completed while disconnected.
-
 **Git** — Every command pulls the repo root (`git pull --ff-only --prune`).
 Create adds a worktree at `<repo>/.worktrees/<name>` on a new branch with
 `origin/<root-branch>` as its upstream. Remove deletes the worktree directory
 and force-deletes the branch.
+
+**OpenCode** — `wt` auto-starts `opencode serve` on port 5096 as a detached
+process on first use, locally and on the remote host via SSH. One server per
+machine, shared across all worktrees and repos. If OpenCode is already running
+on a different port, set `WT_OPENCODE_PORT` to match. Sessions persist in the
+OpenCode database — `wt rm` deletes the worktree and branch but never touches
+session history. Reattach with `wt <name>`; the TUI reconnects and loads full
+history, including work the agent completed while disconnected.
 
 **SSH** — For remote operations, `wt` maintains a long-lived SSH tunnel (port
 5097 to remote 5096) with a mux control socket for connection reuse. Health-checked
