@@ -9,15 +9,15 @@ SSH.
 
 ```
 $ wt ls
-WORKTREE       TITLE                                STATUS       ACTIVITY  TOKENS  REPO                                      AGE
-a3f8c12  Rewrite Linux scheduler in Rust      attached     now       380k    /home/torvalds/.../linux/kernel            3h
-b7e2a09  Implement quantum-safe cryptography  working      now       240k    [remote] /home/satoshi/.../bitcoin/src     3d
-e1d4b83  Autonomous drone delivery            committed    2h        85k     /home/bezos/.../amazon/prime-air           12y
-4a0e9d6  Fix race in block allocator          dirty        5m        92k     /home/torvalds/.../linux/mm                1d
-c9a1f57  Add exceptions to Go                 merged *     6h        45k     /home/robpike/.../golang/go                1d
-d5b8e24  Actually open OpenAI                 idle         10y       120k    /home/altman/.../openai/models             10y
-7f3b1c8  Ship Half-Life 3                     stale *      2d        30k     /home/gaben/.../valve/hl3                 18y
-f2c7d91  Write worktree session manager       idle         5m        150k    /home/ellistarn/.../ellistarn/wt           4d
+WORKTREE       STATUS       TITLE                                URI                                           TOKENS  ACTIVITY  AGE
+a3f8c12  attached     Rewrite Linux scheduler in Rust      localhost:5096/~/.../linux/kernel            380k    now       3h
+b7e2a09  working      Implement quantum-safe cryptography  dev-desktop:5096/~/.../bitcoin/src          240k    now       3d
+e1d4b83  committed    Autonomous drone delivery            localhost:5096/~/.../amazon/prime-air       85k     2h        12d
+4a0e9d6  dirty        Fix race in block allocator          localhost:5096/~/.../linux/mm               92k     5m        1d
+c9a1f57  merged *     Add exceptions to Go                 localhost:5096/~/.../golang/go              45k     6h        1d
+d5b8e24  idle         Actually open OpenAI                 dev-desktop:5096/~/.../openai/models        120k    3h        10d
+7f3b1c8  stale *      Ship Half-Life 3                     localhost:5096/~/.../valve/hl3              30k     2d        5d
+f2c7d91  idle         Write worktree session manager       localhost:5096/~/.../ellistarn/wt           150k    5m        4d
 ```
 
 Statuses, highest priority wins:
