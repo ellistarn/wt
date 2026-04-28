@@ -16,7 +16,7 @@ e1d4b83  Autonomous drone delivery            committed    2h        85k     /ho
 4a0e9d6  Fix race in block allocator          dirty        5m        92k     /home/torvalds/.../linux/mm                1d
 c9a1f57  Add exceptions to Go                 merged *     6h        45k     /home/robpike/.../golang/go                1d
 d5b8e24  Actually open OpenAI                 idle         10y       120k    /home/altman/.../openai/models             10y
-7f3b1c8  Finish TAOCP volume 5                stale *      2d        30k     /home/knuth/.../taocp/vol5                50y
+7f3b1c8  Ship Half-Life 3                     stale *      2d        30k     /home/gaben/.../valve/hl3                 18y
 f2c7d91  Write worktree session manager       idle         5m        150k    /home/ellistarn/.../ellistarn/wt           4d
 ```
 
