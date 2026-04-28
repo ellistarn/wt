@@ -15,14 +15,14 @@ import (
 )
 
 // cmdRm handles: wt rm [name]
-func cmdRm(args []string, remoteOnly bool) {
+func cmdRm(args []string) {
 	if len(args) > 1 {
 		die("unexpected argument: %s", args[1])
 	}
 	if len(args) == 1 {
 		cmdRmTargeted(args[0])
 	} else {
-		cmdRmBatch(remoteOnly)
+		cmdRmBatch()
 	}
 }
 
@@ -184,8 +184,8 @@ func isRemovable(status string) bool {
 	return status == "merged" || status == "stale" || status == "empty"
 }
 
-func cmdRmBatch(remoteOnly bool) {
-	all, pulled, enrichErr := discoverAll(remoteOnly, true)
+func cmdRmBatch() {
+	all, pulled, enrichErr := discoverAll(true)
 	if enrichErr != nil {
 		die("cannot determine session status: %v", enrichErr)
 	}

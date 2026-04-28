@@ -55,17 +55,13 @@ func findWorktree(name string) (worktree.Entry, bool) {
 // returned so callers can gate classification on each repo's pull completing.
 // Returns any enrichment error — callers that make safety decisions must
 // check this; callers that only display can ignore it.
-func discoverAll(remoteOnly, pull bool) ([]worktree.Entry, pullResult, error) {
+func discoverAll(pull bool) ([]worktree.Entry, pullResult, error) {
 	host := os.Getenv("WT_REMOTE_HOST")
 
 	localCh := make(chan []worktree.Entry, 1)
 	remoteCh := make(chan remoteResult, 1)
 
-	if !remoteOnly {
-		go func() { localCh <- discover.ListLocal() }()
-	} else {
-		localCh <- nil
-	}
+	go func() { localCh <- discover.ListLocal() }()
 
 	if host != "" {
 		go func() {
@@ -73,9 +69,6 @@ func discoverAll(remoteOnly, pull bool) ([]worktree.Entry, pullResult, error) {
 			remoteCh <- remoteResult{entries, err}
 		}()
 	} else {
-		if remoteOnly {
-			die("WT_REMOTE_HOST is not set\n\nRemote operations require an SSH host. Set the environment variable:\n\n  export WT_REMOTE_HOST=your-dev-desktop")
-		}
 		remoteCh <- remoteResult{}
 	}
 
@@ -83,9 +76,6 @@ func discoverAll(remoteOnly, pull bool) ([]worktree.Entry, pullResult, error) {
 	local := <-localCh
 	rr := <-remoteCh
 	if rr.err != nil {
-		if remoteOnly {
-			die("%v", rr.err)
-		}
 		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
 	}
 
@@ -109,17 +99,15 @@ func discoverAll(remoteOnly, pull bool) ([]worktree.Entry, pullResult, error) {
 		pulled = make(pullResult)
 	}
 
-	if !remoteOnly {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := opencode.EnsureLocalServer(); err != nil {
-				localErr = fmt.Errorf("local server: %w", err)
-			} else if err := opencode.Enrich(opencode.LocalServerURL(), localEntries); err != nil {
-				localErr = fmt.Errorf("local session query: %w", err)
-			}
-		}()
-	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := opencode.EnsureLocalServer(); err != nil {
+			localErr = fmt.Errorf("local server: %w", err)
+		} else if err := opencode.Enrich(opencode.LocalServerURL(), localEntries); err != nil {
+			localErr = fmt.Errorf("local session query: %w", err)
+		}
+	}()
 
 	if host != "" && rr.err == nil {
 		wg.Add(1)

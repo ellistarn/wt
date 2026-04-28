@@ -36,11 +36,11 @@ func main() {
 
 	// Dispatch
 	if len(remaining) > 0 && remaining[0] == "ls" {
-		cmdLs(remote)
+		cmdLs()
 		return
 	}
 	if len(remaining) > 0 && remaining[0] == "rm" {
-		cmdRm(remaining[1:], remote)
+		cmdRm(remaining[1:])
 		return
 	}
 	if len(remaining) > 0 && remaining[0] == "diff" {
@@ -190,8 +190,8 @@ func cmdRemote(args []string) {
 }
 
 // cmdLs handles: wt ls
-func cmdLs(remoteOnly bool) {
-	all, pulled, enrichErr := discoverAll(remoteOnly, true)
+func cmdLs() {
+	all, pulled, enrichErr := discoverAll(true)
 	if enrichErr != nil {
 		die("%v", enrichErr)
 	}
@@ -282,7 +282,6 @@ Usage:
   wt <name>                 Attach to an existing worktree (local or remote)
   wt -r <path>              Create a new remote worktree and attach
   wt ls                     List all worktrees (local and remote)
-  wt -r ls                  List remote worktrees only
   wt diff <name>            Show changes on a worktree's branch
   wt rm                     Remove worktrees marked * in wt ls
   wt rm <name>              Remove a specific worktree
