@@ -18,23 +18,27 @@ c9a1f57  Add exceptions to Go                 merged *     6h        45k     /ho
 d5b8e24  Actually open OpenAI                 idle         10y       120k    /home/altman/.../openai/models             10y
 7f3b1c8  Refactor tokenizer                   stale *      2d        30k     [remote] /home/karpathy/.../llm.c          5d
 f2c7d91  -                                    empty *      -         -       /home/user/.../acme/toolkit                1d
-                                              # attached  — TUI client connected
-                                              # working   — agent generating
-                                              # dirty     — uncommitted changes in working tree
-                                              # merged *  — changes incorporated into upstream
-                                              # committed — unique commits not yet in upstream
-                                              # idle      — session exists, no unique commits
-                                              # stale *   — session inactive >4h, no unique commits
-                                              # empty *   — no session was ever created
 ```
+
+Statuses, highest priority wins:
+
+- **attached** — TUI client connected
+- **working** — agent generating
+- **dirty** — uncommitted changes in working tree
+- **merged** \* — changes incorporated into upstream
+- **committed** — unique commits not yet in upstream
+- **idle** — session exists, no unique commits
+- **stale** \* — session inactive >4h, no unique commits
+- **empty** \* — no session was ever created
 
 ## Install
 
 ```
-go install github.com/ellistarn/wt@latest
+go install github.com/ellistarn/wt@latest  # requires Go 1.24+, Git 2.38+
 ```
 
-Requires Go 1.24+, Git 2.38+, and `opencode` on PATH.
+Set `WT_REMOTE_HOST` for remote operations, `WT_OPENCODE_PORT` to override the
+default port (5096).
 
 ## Worktree lifecycle
 
@@ -50,31 +54,14 @@ wt                        Create a new local worktree and attach
 wt <name>                 Attach to an existing worktree (local or remote)
 wt -r <path>              Create a new remote worktree and attach
 wt ls                     List all worktrees (local and remote)
-wt -r ls                  List remote worktrees only
 wt diff <name>            Show changes on a worktree's branch
-wt rm                     Remove worktrees marked * in wt ls
-wt rm <name>              Remove a specific worktree
+wt rm                     Remove worktrees marked * (merged/stale/empty)
+wt rm <name>              Remove a specific worktree unconditionally
 
 Flags:
   -r, --remote              Operate on the remote dev desktop
   -h, --help                Show this help
 ```
 
-## Cleanup
-
-`wt rm` batch-removes worktrees whose status is marked `*`: merged (work
-landed), stale (inactive session, no commits), and empty (no session created).
-`wt ls` is the preview — what you see is what gets removed. `wt rm <name>`
-removes unconditionally.
-
-Merge detection compares against `origin/<root-branch>` and handles regular
-merges, squash merges, and rebase merges.
-
-## Configuration
-
-Environment variables:
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `WT_REMOTE_HOST` | For `-r` operations | — | SSH hostname of the remote dev desktop |
-| `WT_OPENCODE_PORT` | No | `5096` | OpenCode server port (local and remote) |
+`wt ls` is the preview for `wt rm`. Merge detection handles regular merges,
+squash merges, and rebase merges against `origin/<root-branch>`.

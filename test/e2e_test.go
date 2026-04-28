@@ -665,14 +665,7 @@ func TestRemote_HostNotSet(t *testing.T) {
 
 	base := []string{"WT_REMOTE_HOST=", "HOME=" + t.TempDir()}
 
-	out, code := wtRaw(t, base, "-r", "ls")
-	if code == 0 {
-		t.Fatal("expected non-zero exit code")
-	}
-	assertContains(t, out, "WT_REMOTE_HOST is not set")
-	assertContains(t, out, "export WT_REMOTE_HOST=")
-
-	out, code = wtRaw(t, base, "-r", "/tmp/fake")
+	out, code := wtRaw(t, base, "-r", "/tmp/fake")
 	if code == 0 {
 		t.Fatal("expected non-zero exit code")
 	}
@@ -688,13 +681,7 @@ func TestRemote_HostUnreachable(t *testing.T) {
 
 	base := []string{"WT_REMOTE_HOST=wt-nonexistent-host-test", "HOME=" + t.TempDir()}
 
-	out, code := wtRaw(t, base, "-r", "ls")
-	if code == 0 {
-		t.Fatal("expected non-zero exit code")
-	}
-	assertContains(t, out, "cannot connect to remote host")
-
-	out, code = wtRaw(t, base, "-r", "/tmp/fake")
+	out, code := wtRaw(t, base, "-r", "/tmp/fake")
 	if code == 0 {
 		t.Fatal("expected non-zero exit code")
 	}

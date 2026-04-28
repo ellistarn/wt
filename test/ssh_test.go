@@ -160,7 +160,7 @@ func TestSSH_Ls_UnifiedStatus(t *testing.T) {
 	env.push("ssh-merged")
 	env.mergeToMain("ssh-merged")
 
-	out := env.wt("-r", "ls")
+	out := env.wt("ls")
 	t.Log("SSH ls output:\n" + out)
 
 	assertContains(t, out, "ssh-clean")
@@ -183,8 +183,8 @@ func TestSSH_RemoteSessionQuery(t *testing.T) {
 	wt := env.addWorktree("ssh-session")
 	env.createSession(wt)
 
-	// wt ls -r should show the session
-	out := env.wt("-r", "ls")
+	// wt ls should show the session
+	out := env.wt("ls")
 	t.Log("SSH ls output:\n" + out)
 
 	assertContains(t, out, "ssh-session")
@@ -207,7 +207,7 @@ func TestSSH_RemoteSessionQuery(t *testing.T) {
 	}
 
 	// wt rm should skip it (session exists, default 4h stale threshold)
-	out = env.wt("-r", "rm", "--dry-run")
+	out = env.wt("rm", "--dry-run")
 	t.Log("SSH rm dry-run output:\n" + out)
 	assertContains(t, out, "ssh-session")
 	assertContains(t, out, "keep (")
