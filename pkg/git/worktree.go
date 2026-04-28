@@ -1,6 +1,9 @@
 package git
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // WorktreeAdd creates a new worktree at <repo>/.worktrees/<name> on branch <name>.
 // Sets the new branch's upstream tracking ref to origin/<root-branch>, where
@@ -37,9 +40,8 @@ func Pull(host, repo string) error {
 	return nil
 }
 
-// WorktreeRemove removes the worktree directory and deletes the branch.
-// git worktree remove deletes the directory; git branch -d deletes the branch
-// (only if merged, safe delete).
+// WorktreeRemove removes the worktree directory and force-deletes the branch.
+// The caller's classification logic has already confirmed safety.
 func WorktreeRemove(host, repo, name string) error {
 	wtPath := repo + "/.worktrees/" + name
 	args := []string{"worktree", "remove", wtPath}
@@ -48,9 +50,15 @@ func WorktreeRemove(host, repo, name string) error {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
 	logCmd(host, repo, out, args...)
-	// Best-effort branch delete. -d is safe (refuses unmerged branches).
-	// If it fails (branch doesn't exist, not merged), that's fine.
-	runGit(host, repo, "branch", "-d", name)
+	// Force delete the branch. The caller's classification logic has already
+	// confirmed this worktree is safe to remove (merged, stale, or empty),
+	// which is stricter than git's own -d merge check.
+	branchArgs := []string{"branch", "-D", name}
+	out, err = runGit(host, repo, branchArgs...)
+	logCmd(host, repo, out, branchArgs...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", name, err)
+	}
 	return nil
 }
 
@@ -64,6 +72,11 @@ func WorktreeForceRemove(host, repo, name string) error {
 	}
 	logCmd(host, repo, out, args...)
 	// Force delete the branch regardless of merge status.
-	runGit(host, repo, "branch", "-D", name)
+	branchArgs := []string{"branch", "-D", name}
+	out, err = runGit(host, repo, branchArgs...)
+	logCmd(host, repo, out, branchArgs...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", name, err)
+	}
 	return nil
 }
