@@ -56,21 +56,15 @@ Flags:
   -h, --help                Show this help
 ```
 
-## Worktree lifecycle
-
-Each worktree branches from whatever the repo root has checked out (typically
-main), with `origin/<root-branch>` as its merge target. `wt` pulls the repo
-before creating a worktree and again after you exit, so worktrees start from the
-latest remote state and merge detection stays accurate against a fresh upstream.
-
 ## How it works
 
 `wt` glues together Git, OpenCode, and SSH.
 
 **Git** — Every command pulls the repo root (`git pull --ff-only --prune`).
 Create adds a worktree at `<repo>/.worktrees/<name>` on a new branch with
-`origin/<root-branch>` as its upstream. Remove deletes the worktree directory
-and force-deletes the branch.
+`origin/<root-branch>` as its upstream, so worktrees always start from the
+latest remote state and merge detection stays accurate against a fresh upstream.
+Remove deletes the worktree directory and force-deletes the branch.
 
 **OpenCode** — `wt` auto-starts `opencode serve` on port 5096 as a detached
 process on first use, locally and on the remote host via SSH. One server per
