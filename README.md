@@ -12,7 +12,7 @@ $ wt ls
 WORKTREE  STATUS     TITLE                                URI                                     TOKENS  ACTIVITY  AGE
 a3f8c12   attached   Rewrite Linux scheduler in Rust      localhost:5096/~/.../torvalds/linux     380k    now       3h
 b7e2a09   working    Implement quantum-safe cryptography  dev-desktop:5096/~/.../satoshi/bitcoin  240k    now       3d
-4a0e9d6   dirty      Fix race in block allocator          localhost:5096/~/.../torvalds/linux     92k     5m        1d
+e4f2a81   dirty      Finish The Winds of Winter           localhost:5096/~/.../grrm/asoiaf       180k    5m        15y
 f2c7d91   idle       Write worktree session manager       localhost:5096/~/.../ellistarn/wt       150k    5m        4d
 e1d4b83   committed  Autonomous drone delivery            localhost:5096/~/.../bezos/prime-air    85k     2h        12y
 c9a1f57   merged *   Add exceptions to Go                 localhost:5096/~/.../robpike/go         45k     6h        1d
