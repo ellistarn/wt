@@ -20,12 +20,12 @@ func ListLocal() []worktree.Entry {
 		home = resolved
 	}
 
-	// Find .worktrees directories by walking with os.ReadDir, which uses
-	// the d_type field from readdir to check IsDir() without stat syscalls.
+	// Find git repos by walking for .git directories. Uses os.ReadDir
+	// which reads d_type from readdir to check IsDir() without stat syscalls.
 	var repos []string
 	seen := make(map[string]bool)
 	var repoMu sync.Mutex
-	findWorktreeDirs(home, 10, 16, func(repo string) {
+	findGitRepos(home, 10, 16, func(repo string) {
 		repoMu.Lock()
 		defer repoMu.Unlock()
 		if !seen[repo] {
@@ -52,7 +52,10 @@ func ListLocal() []worktree.Entry {
 	return all
 }
 
-// findWorktreeDirs walks directories looking for .worktrees entries.
+// findGitRepos walks directories looking for .git entries (directories or files).
+// A .git directory indicates a repo root; a .git file indicates a worktree
+// checkout (which is found via its parent repo's git worktree list).
+//
 // Uses three generic pruning strategies to stay fast on any filesystem:
 //  1. Hidden directories (starting with ".") are skipped.
 //  2. Git repo roots (.git detected) are leaf nodes — their children are
@@ -66,7 +69,7 @@ func ListLocal() []worktree.Entry {
 // A fixed pool of workers processes a directory queue so wall time scales
 // with tree depth rather than total directory count, without goroutine
 // explosion.
-func findWorktreeDirs(root string, maxDepth, workers int, fn func(repo string)) {
+func findGitRepos(root string, maxDepth, workers int, fn func(repo string)) {
 	type item struct {
 		dir   string
 		depth int
@@ -140,18 +143,18 @@ func walkDir(dir string, depth int, fn func(repo string)) []string {
 		if !e.IsDir() {
 			continue
 		}
-		if name == ".worktrees" {
-			fn(dir)
-			continue
-		}
 		if !strings.HasPrefix(name, ".") {
 			children = append(children, name)
 		}
 	}
 
-	if hasGit && depth > 0 {
-		return nil
+	if hasGit {
+		fn(dir)
+		if depth > 0 {
+			return nil
+		}
 	}
+
 	if len(children) > 100 {
 		return nil
 	}
@@ -170,28 +173,65 @@ func listInRepo(repo string) []worktree.Entry {
 func parseWorktreeList(porcelain, repo string) []worktree.Entry {
 	var entries []worktree.Entry
 	var currentWT string
-	wtPrefix := repo + "/.worktrees/"
+	var currentBranch string
 
 	for _, line := range strings.Split(porcelain, "\n") {
 		if strings.HasPrefix(line, "worktree ") {
 			currentWT = strings.TrimPrefix(line, "worktree ")
 		}
-		if strings.HasPrefix(line, "branch ") && currentWT != "" {
-			if strings.HasPrefix(currentWT, wtPrefix) {
-				e := worktree.Entry{
-					Name: strings.TrimPrefix(currentWT, wtPrefix),
-					Dir:  currentWT,
-					Repo: repo,
-				}
-				// Stat the .git file to get creation time.
-				// Git creates this file when the worktree is added; it doesn't change.
-				if info, err := os.Stat(filepath.Join(currentWT, ".git")); err == nil {
-					e.CreatedAt = info.ModTime()
-				}
+		if strings.HasPrefix(line, "branch ") {
+			currentBranch = strings.TrimPrefix(line, "branch ")
+			// Strip refs/heads/ prefix
+			currentBranch = strings.TrimPrefix(currentBranch, "refs/heads/")
+		}
+		if line == "" && currentWT != "" {
+			if e, ok := matchWorktree(currentWT, currentBranch, repo); ok {
 				entries = append(entries, e)
 			}
 			currentWT = ""
+			currentBranch = ""
+		}
+	}
+	// Handle final block if porcelain doesn't end with a blank line.
+	if currentWT != "" {
+		if e, ok := matchWorktree(currentWT, currentBranch, repo); ok {
+			entries = append(entries, e)
 		}
 	}
 	return entries
+}
+
+// matchWorktree checks if a worktree path is wt-managed and returns the Entry.
+func matchWorktree(wtPath, branch, repo string) (worktree.Entry, bool) {
+	if branch == "" {
+		return worktree.Entry{}, false
+	}
+	// Sibling layout: <parent>/<repobase>-<name>
+	if wtPath == worktree.WorktreeDir(repo, branch) {
+		return newEntry(branch, wtPath, repo), true
+	}
+	// COMPAT: legacy layout <repo>/.worktrees/<name>. Remove once all
+	// legacy worktrees have been drained via wt rm.
+	if matchLegacyWorktree(wtPath, branch, repo) {
+		return newEntry(branch, wtPath, repo), true
+	}
+	return worktree.Entry{}, false
+}
+
+func newEntry(name, dir, repo string) worktree.Entry {
+	e := worktree.Entry{Name: name, Dir: dir, Repo: repo}
+	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		e.CreatedAt = info.ModTime()
+	}
+	return e
+}
+
+// COMPAT: matchLegacyWorktree matches the old <repo>/.worktrees/<name> layout.
+// Remove once all legacy worktrees have been drained via wt rm.
+func matchLegacyWorktree(wtPath, branch, repo string) bool {
+	prefix := repo + "/.worktrees/"
+	if !strings.HasPrefix(wtPath, prefix) {
+		return false
+	}
+	return strings.TrimPrefix(wtPath, prefix) == branch
 }

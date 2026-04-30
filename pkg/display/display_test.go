@@ -110,7 +110,7 @@ func TestPrintTable(t *testing.T) {
 		{
 			Entry: worktree.Entry{
 				Name:      "a3f8c12",
-				Dir:       "/home/user/src/github.com/acme/project/.worktrees/a3f8c12",
+				Dir:       "/home/user/src/github.com/acme/project-a3f8c12",
 				Repo:      "/home/user/src/github.com/acme/project",
 				Status:    "idle",
 				Title:     "Fix auth handler",
@@ -123,7 +123,7 @@ func TestPrintTable(t *testing.T) {
 		{
 			Entry: worktree.Entry{
 				Name:      "b7e2a09",
-				Dir:       "/home/user/src/github.com/acme/project/.worktrees/b7e2a09",
+				Dir:       "/home/user/src/github.com/acme/project-b7e2a09",
 				Repo:      "/home/user/src/github.com/acme/project",
 				CreatedAt: now.Add(-1 * time.Hour),
 			},

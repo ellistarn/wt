@@ -49,13 +49,13 @@ func TestParseAttachDir(t *testing.T) {
 	}{
 		{
 			name:    "node wrapper",
-			line:    "/usr/local/bin/node /usr/local/bin/opencode attach http://localhost:5096 --dir /home/me/.worktrees/fix-auth",
-			wantDir: "/home/me/.worktrees/fix-auth",
+			line:    "/usr/local/bin/node /usr/local/bin/opencode attach http://localhost:5096 --dir /home/me/project-fix-auth",
+			wantDir: "/home/me/project-fix-auth",
 		},
 		{
 			name:    "native binary",
-			line:    "/usr/lib/opencode/bin/opencode attach http://localhost:5096 --dir /home/me/.worktrees/fix-auth",
-			wantDir: "/home/me/.worktrees/fix-auth",
+			line:    "/usr/lib/opencode/bin/opencode attach http://localhost:5096 --dir /home/me/project-fix-auth",
+			wantDir: "/home/me/project-fix-auth",
 		},
 		{
 			name: "bare opencode ignored",
@@ -239,7 +239,7 @@ func TestFetchSessionStatus_NoMessages(t *testing.T) {
 func TestEnrich_RegressionCrossProject(t *testing.T) {
 	session := Session{
 		ID:        "sess-1",
-		Directory: "/home/user/kro/.worktrees/a3f8c12",
+		Directory: "/home/user/kro-a3f8c12",
 		Title:     "fix auth bug",
 		Time: struct {
 			Created int64 `json:"created"`
@@ -268,11 +268,11 @@ func TestEnrich_RegressionCrossProject(t *testing.T) {
 	entries := []worktree.Entry{
 		{
 			Name: "a3f8c12",
-			Dir:  "/home/user/kro/.worktrees/a3f8c12",
+			Dir:  "/home/user/kro-a3f8c12",
 		},
 		{
 			Name: "b7e2a09",
-			Dir:  "/home/user/wt/.worktrees/b7e2a09", // no session for this one
+			Dir:  "/home/user/wt-b7e2a09", // no session for this one
 		},
 	}
 
@@ -299,7 +299,7 @@ func TestEnrich_RegressionStaleTokens(t *testing.T) {
 
 	session := Session{
 		ID:        "sess-stale",
-		Directory: "/home/user/wt/.worktrees/c4d9e01",
+		Directory: "/home/user/wt-c4d9e01",
 		Title:     "stale session with tokens",
 		Time: struct {
 			Created int64 `json:"created"`
@@ -353,7 +353,7 @@ func TestEnrich_RegressionStaleTokens(t *testing.T) {
 	entries := []worktree.Entry{
 		{
 			Name: "c4d9e01",
-			Dir:  "/home/user/wt/.worktrees/c4d9e01",
+			Dir:  "/home/user/wt-c4d9e01",
 		},
 	}
 

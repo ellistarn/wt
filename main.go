@@ -69,7 +69,7 @@ func cmdLocal(args []string) {
 			die("not in a git repo")
 		}
 		name := worktree.GenerateName()
-		wtDir := repo + "/.worktrees/" + name
+		wtDir := worktree.WorktreeDir(repo, name)
 		if err := git.Pull("", repo); err != nil {
 			die("failed to pull: %v", err)
 		}
@@ -159,7 +159,7 @@ func cmdRemote(args []string) {
 
 	// Create new worktree
 	name := worktree.GenerateName()
-	wtDir := repo + "/.worktrees/" + name
+	wtDir := worktree.WorktreeDir(repo, name)
 	if err := git.Pull(host, repo); err != nil {
 		die("failed to pull: %v", err)
 	}

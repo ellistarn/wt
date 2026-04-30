@@ -3,13 +3,17 @@ package git
 import (
 	"fmt"
 	"os"
+
+	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-// WorktreeAdd creates a new worktree at <repo>/.worktrees/<name> on branch <name>.
-// Sets the new branch's upstream tracking ref to origin/<root-branch>, where
-// root-branch is whatever the repo root has checked out.
+// WorktreeAdd creates a new worktree as a sibling of the repo on branch <name>.
+// The worktree lives at <parent>/<repobasename>-<name>. Sets the new branch's
+// upstream tracking ref to origin/<root-branch>, where root-branch is whatever
+// the repo root has checked out.
 func WorktreeAdd(host, repo, name string) error {
-	args := []string{"worktree", "add", ".worktrees/" + name, "-b", name}
+	wtDir := worktree.WorktreeDir(repo, name)
+	args := []string{"worktree", "add", wtDir, "-b", name}
 	out, err := runCapture(host, repo, args...)
 	if err != nil {
 		return err
@@ -41,10 +45,10 @@ func Pull(host, repo string) error {
 }
 
 // WorktreeRemove removes the worktree directory and force-deletes the branch.
+// wtDir is the worktree's actual path on disk (may be sibling or legacy layout).
 // The caller's classification logic has already confirmed safety.
-func WorktreeRemove(host, repo, name string) error {
-	wtPath := repo + "/.worktrees/" + name
-	args := []string{"worktree", "remove", wtPath}
+func WorktreeRemove(host, repo, name, wtDir string) error {
+	args := []string{"worktree", "remove", wtDir}
 	out, err := runCapture(host, repo, args...)
 	if err != nil {
 		return fmt.Errorf("git worktree remove: %w", err)
@@ -63,9 +67,9 @@ func WorktreeRemove(host, repo, name string) error {
 }
 
 // WorktreeForceRemove removes the worktree and branch without safety checks.
-func WorktreeForceRemove(host, repo, name string) error {
-	wtPath := repo + "/.worktrees/" + name
-	args := []string{"worktree", "remove", "--force", wtPath}
+// wtDir is the worktree's actual path on disk (may be sibling or legacy layout).
+func WorktreeForceRemove(host, repo, name, wtDir string) error {
+	args := []string{"worktree", "remove", "--force", wtDir}
 	out, err := runCapture(host, repo, args...)
 	if err != nil {
 		return fmt.Errorf("git worktree remove --force: %w", err)
