@@ -50,7 +50,7 @@ func PrintTable(rows []Row, serverPort int) {
 		if title == "" {
 			title = "-"
 		}
-		uri := formatURI(e.Host, e.Repo, serverPort)
+		uri := formatURI(e.Host, e.Dir, serverPort)
 		age := formatDuration(e.CreatedAt, now)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, uri, tokens, activity, age)
 	}
@@ -107,19 +107,30 @@ func formatTokens(tokens int) string {
 	}
 }
 
-// formatRepo shortens the repo path to ~/.../last/three segments.
+// formatRepo shortens the repo path by replacing $HOME with ~ and eliding
+// middle segments when the path is long. Short paths are left as-is.
 func formatRepo(repo string) string {
+	// Replace home prefix with ~
+	if home, err := os.UserHomeDir(); err == nil {
+		if repo == home {
+			return "~"
+		}
+		if strings.HasPrefix(repo, home+"/") {
+			repo = "~/" + strings.TrimPrefix(repo, home+"/")
+		}
+	}
 	parts := strings.Split(repo, "/")
-	// Show last 3 segments with ~/... prefix when the path is long enough.
-	// e.g., /home/user/go/src/github.com/acme/project → ~/.../acme/project
-	if len(parts) > 4 {
+	// Only elide if there are enough segments to actually shorten.
+	// ~/a/b/c (4 parts) → no elision needed
+	// ~/a/b/c/d/e (6 parts) → ~/…/c/d/e
+	if len(parts) > 5 {
 		tail := strings.Join(parts[len(parts)-3:], "/")
 		return "~/.../" + tail
 	}
 	return repo
 }
 
-// formatURI combines host and repo into a single host:port/path string.
+// formatURI combines host and worktree dir into a single host:port/path string.
 func formatURI(host, repo string, port int) string {
 	if host == "" {
 		host = "localhost"

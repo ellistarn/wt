@@ -3,16 +3,12 @@ package git
 import (
 	"fmt"
 	"os"
-
-	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-// WorktreeAdd creates a new worktree as a sibling of the repo on branch <name>.
-// The worktree lives at <parent>/<repobasename>-<name>. Sets the new branch's
-// upstream tracking ref to origin/<root-branch>, where root-branch is whatever
-// the repo root has checked out.
-func WorktreeAdd(host, repo, name string) error {
-	wtDir := worktree.WorktreeDir(repo, name)
+// WorktreeAdd creates a new worktree at wtDir on branch <name>. Sets the new
+// branch's upstream tracking ref to origin/<root-branch>, where root-branch is
+// whatever the repo root has checked out.
+func WorktreeAdd(host, repo, name, wtDir string) error {
 	args := []string{"worktree", "add", wtDir, "-b", name}
 	out, err := runCapture(host, repo, args...)
 	if err != nil {
@@ -45,7 +41,7 @@ func Pull(host, repo string) error {
 }
 
 // WorktreeRemove removes the worktree directory and force-deletes the branch.
-// wtDir is the worktree's actual path on disk (may be sibling or legacy layout).
+// wtDir is the worktree's actual path on disk (may be sibling or child layout).
 // The caller's classification logic has already confirmed safety.
 func WorktreeRemove(host, repo, name, wtDir string) error {
 	args := []string{"worktree", "remove", wtDir}
@@ -67,7 +63,7 @@ func WorktreeRemove(host, repo, name, wtDir string) error {
 }
 
 // WorktreeForceRemove removes the worktree and branch without safety checks.
-// wtDir is the worktree's actual path on disk (may be sibling or legacy layout).
+// wtDir is the worktree's actual path on disk (may be sibling or child layout).
 func WorktreeForceRemove(host, repo, name, wtDir string) error {
 	args := []string{"worktree", "remove", "--force", wtDir}
 	out, err := runCapture(host, repo, args...)

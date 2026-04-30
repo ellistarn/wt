@@ -89,9 +89,21 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func (e *testEnv) addWorktree(name string) string {
 	e.t.Helper()
-	wtDir := filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name)
+	// New default layout: <parent>/<name> (root="..")
+	wtDir := filepath.Join(filepath.Dir(e.repo), name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
 	// Set upstream tracking to match WorktreeAdd behavior.
+	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
+	return wtDir
+}
+
+// addLegacySiblingWorktree creates a worktree in the old sibling layout:
+// <parent>/<repobase>-<name>. Used to test backward-compat discovery.
+func (e *testEnv) addLegacySiblingWorktree(name string) string {
+	e.t.Helper()
+	wtDir := filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name)
+	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
 	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
 	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
 	return wtDir
@@ -253,8 +265,42 @@ func (e *testEnv) wt(args ...string) string {
 }
 
 func (e *testEnv) worktreeExists(name string) bool {
+	// New default layout: <parent>/<name>
+	_, err := os.Stat(filepath.Join(filepath.Dir(e.repo), name))
+	return err == nil
+}
+
+func (e *testEnv) legacySiblingWorktreeExists(name string) bool {
 	_, err := os.Stat(filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name))
 	return err == nil
+}
+
+func (e *testEnv) childWorktreeExists(name string) bool {
+	_, err := os.Stat(filepath.Join(e.repo, ".worktrees", name))
+	return err == nil
+}
+
+func (e *testEnv) rootWorktreeExists(root, name string) bool {
+	_, err := os.Stat(filepath.Join(e.repo, root, name))
+	return err == nil
+}
+
+func (e *testEnv) addChildWorktree(name string) string {
+	e.t.Helper()
+	wtDir := filepath.Join(e.repo, ".worktrees", name)
+	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
+	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
+	return wtDir
+}
+
+func (e *testEnv) addRootWorktree(root, name string) string {
+	e.t.Helper()
+	wtDir := filepath.Join(e.repo, root, name)
+	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
+	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
+	return wtDir
 }
 
 func gitCmd(t *testing.T, dir string, args ...string) string {
@@ -806,4 +852,138 @@ func TestLs_NonDefaultBranch(t *testing.T) {
 	// all commits are reachable from origin/krocodile).
 	// With the old DefaultBranch code, it would show as "committed" because
 	// origin/main doesn't contain the krocodile commits.
+}
+
+// --- Child layout tests ---
+
+func TestLs_ChildLayout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create worktrees in both layouts
+	env.addWorktree("sibling-wt")
+	env.addChildWorktree("child-wt")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "sibling-wt")
+	assertContains(t, out, "child-wt")
+}
+
+func TestTargetedRm_ChildLayout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	env.addChildWorktree("child-rm")
+
+	out := env.wt("rm", "child-rm")
+	assertContains(t, out, "removed")
+	if env.childWorktreeExists("child-rm") {
+		t.Error("child layout worktree should have been removed")
+	}
+}
+
+func TestBatchRm_ChildLayout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// empty * in child layout → removed
+	env.addChildWorktree("child-empty")
+
+	// dirty in child layout → kept
+	wt := env.addChildWorktree("child-dirty")
+	os.WriteFile(filepath.Join(wt, "f.txt"), []byte("x"), 0644)
+
+	out := env.wt("rm")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "child-empty")
+	assertContains(t, out, "removed")
+
+	if !env.childWorktreeExists("child-dirty") {
+		t.Error("dirty child worktree should not be removed")
+	}
+	if env.childWorktreeExists("child-empty") {
+		t.Error("empty child worktree should have been removed")
+	}
+}
+
+// --- Custom root tests ---
+
+func TestLs_CustomRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create worktree using a custom root
+	env.addRootWorktree(".wt", "custom-root-wt")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "custom-root-wt")
+}
+
+func TestTargetedRm_CustomRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	env.addRootWorktree(".wt", "custom-rm")
+
+	out := env.wt("rm", "custom-rm")
+	assertContains(t, out, "removed")
+	if env.rootWorktreeExists(".wt", "custom-rm") {
+		t.Error("custom root worktree should have been removed")
+	}
+}
+
+// --- Legacy sibling layout compat tests ---
+
+func TestLs_LegacySiblingCompat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create one worktree in the old <repobase>-<name> layout and one in new layout
+	env.addLegacySiblingWorktree("old-sibling")
+	env.addWorktree("new-default")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "old-sibling")
+	assertContains(t, out, "new-default")
+}
+
+func TestTargetedRm_LegacySiblingCompat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	env.addLegacySiblingWorktree("old-rm")
+
+	out := env.wt("rm", "old-rm")
+	assertContains(t, out, "removed")
+	if env.legacySiblingWorktreeExists("old-rm") {
+		t.Error("legacy sibling worktree should have been removed")
+	}
 }

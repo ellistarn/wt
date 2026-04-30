@@ -10,33 +10,22 @@ import (
 )
 
 // ListRemote finds all worktrees on the remote host.
-// Finds git repos, runs git worktree list on each, and filters for
-// wt-managed worktrees in sibling layout (<repo>-<name>) or legacy
-// layout (<repo>/.worktrees/<name>).
-// Collects worktree metadata including timestamps in a single SSH call.
+// Finds git repos, runs git worktree list on each, and reports all non-root
+// worktrees. Collects worktree metadata including timestamps in a single SSH call.
 func ListRemote(host string) ([]worktree.Entry, error) {
 	script := `
 set -eu
 home=$(cd "$HOME" && pwd -P)
 
-# Check if a directory is a git repo and list its wt-managed worktrees.
-# Matches both sibling layout (<parent>/<repobase>-<name>) and legacy
-# layout (<repo>/.worktrees/<name>).
+# List all non-root worktrees for a git repo.
 process_repo() {
     repo="$1"
-    repobase=$(basename "$repo")
-    repodir=$(dirname "$repo")
-    if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
-        git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v repo="$repo" -v repobase="$repobase" -v repodir="$repodir" '
+    if [ -d "$repo/.git" ]; then
+        git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v repo="$repo" '
             /^worktree / { wt=$2 }
             /^branch / {
                 br=$2; sub(/^refs\/heads\//, "", br)
-                # Sibling layout: <parent>/<repobase>-<name>
-                match_sibling = (wt == repodir "/" repobase "-" br)
-                # COMPAT: legacy layout <repo>/.worktrees/<name>.
-                # Remove once all legacy worktrees have been drained via wt rm.
-                match_legacy = (wt == repo "/.worktrees/" br)
-                if (match_sibling || match_legacy) {
+                if (wt != repo) {
                     cmd = "stat -c %Y \"" wt "/.git\" 2>/dev/null || stat -f %m \"" wt "/.git\" 2>/dev/null || echo 0"
                     cmd | getline ts
                     close(cmd)

@@ -18,10 +18,12 @@ resuming trivial.
 
 ## Model
 
-A **worktree** is a git worktree at `<repo>-<name>`, a sibling of the repo
-directory, where `name` equals the branch name. The worktree directory is the
-primary key. Worktrees are created per unit of work and cleaned up separately
-when the branch lands.
+A **worktree** is a git worktree at `<root>/<name>`, where `root` is a
+directory relative to the repo (default `..`, placing worktrees as siblings) and
+`name` equals the branch name. The worktree directory is the primary key.
+Worktrees are created per unit of work and cleaned up separately when the branch
+lands. The root can be overridden with `--root <dir>` (e.g. `--root .worktrees`
+when the repo is `$HOME` and the parent directory is not writable).
 
 The **root branch** is whatever branch the repo root has checked out at worktree
 creation time (typically `main`). Each worktree records `origin/<root-branch>` as
