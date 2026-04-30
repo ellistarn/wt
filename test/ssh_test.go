@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,12 +59,14 @@ func newSSHTestEnv(t *testing.T) *sshTestEnv {
 
 func (e *sshTestEnv) addWorktree(name string) string {
 	e.t.Helper()
-	wtDir := e.repo + "/.worktrees/" + name
+	repoBase := filepath.Base(e.repo)
+	repoDir := filepath.Dir(e.repo)
+	wtDir := repoDir + "/" + repoBase + "-" + name
 	sshRun(e.t, e.host, fmt.Sprintf(
-		"cd %s && git worktree add .worktrees/%s -b %s && "+
+		"cd %s && git worktree add %s -b %s && "+
 			"root=$(git rev-parse --abbrev-ref HEAD) && "+
 			"git branch --set-upstream-to=origin/$root %s",
-		e.repo, name, name, name))
+		e.repo, wtDir, name, name))
 	return wtDir
 }
 
@@ -113,7 +116,9 @@ func (e *sshTestEnv) wt(args ...string) string {
 }
 
 func (e *sshTestEnv) worktreeExists(name string) bool {
-	_, err := sshRunErr(e.host, fmt.Sprintf("test -d %s/.worktrees/%s", e.repo, name))
+	repoBase := filepath.Base(e.repo)
+	repoDir := filepath.Dir(e.repo)
+	_, err := sshRunErr(e.host, fmt.Sprintf("test -d %s/%s-%s", repoDir, repoBase, name))
 	return err == nil
 }
 

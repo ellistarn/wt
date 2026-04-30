@@ -89,7 +89,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func (e *testEnv) addWorktree(name string) string {
 	e.t.Helper()
-	wtDir := filepath.Join(e.repo, ".worktrees", name)
+	wtDir := filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
 	// Set upstream tracking to match WorktreeAdd behavior.
 	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
@@ -253,7 +253,7 @@ func (e *testEnv) wt(args ...string) string {
 }
 
 func (e *testEnv) worktreeExists(name string) bool {
-	_, err := os.Stat(filepath.Join(e.repo, ".worktrees", name))
+	_, err := os.Stat(filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name))
 	return err == nil
 }
 

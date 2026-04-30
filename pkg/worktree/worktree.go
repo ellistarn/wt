@@ -3,9 +3,17 @@ package worktree
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"path"
 	"sort"
 	"time"
 )
+
+// WorktreeDir returns the absolute path of a worktree given the repo root
+// and worktree name. Worktrees live as siblings of the repo:
+// <parent>/<repobasename>-<name>.
+func WorktreeDir(repo, name string) string {
+	return path.Join(path.Dir(repo), path.Base(repo)+"-"+name)
+}
 
 // Entry represents a discovered worktree.
 type Entry struct {

@@ -2,7 +2,6 @@ package discover
 
 import (
 	"fmt"
-	"path"
 	"strconv"
 	"strings"
 
@@ -11,25 +10,33 @@ import (
 )
 
 // ListRemote finds all worktrees on the remote host.
-// Fans out find across top-level home directories in parallel so wall time
-// scales with tree depth, not breadth — matching the local walk strategy.
+// Finds git repos, runs git worktree list on each, and filters for
+// wt-managed worktrees in sibling layout (<repo>-<name>) or legacy
+// layout (<repo>/.worktrees/<name>).
 // Collects worktree metadata including timestamps in a single SSH call.
 func ListRemote(host string) ([]worktree.Entry, error) {
 	script := `
 set -eu
 home=$(cd "$HOME" && pwd -P)
 
-# Parallel find: fan out across top-level dirs, same as local worker pool.
-# Writes to pipe are atomic for lines < PIPE_BUF (4096), so concurrent
-# finds produce clean output.
+# Check if a directory is a git repo and list its wt-managed worktrees.
+# Matches both sibling layout (<parent>/<repobase>-<name>) and legacy
+# layout (<repo>/.worktrees/<name>).
 process_repo() {
     repo="$1"
+    repobase=$(basename "$repo")
+    repodir=$(dirname "$repo")
     if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
-        git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v repo="$repo" '
+        git -C "$repo" worktree list --porcelain 2>/dev/null | awk -v repo="$repo" -v repobase="$repobase" -v repodir="$repodir" '
             /^worktree / { wt=$2 }
             /^branch / {
                 br=$2; sub(/^refs\/heads\//, "", br)
-                if (wt ~ /\/.worktrees\//) {
+                # Sibling layout: <parent>/<repobase>-<name>
+                match_sibling = (wt == repodir "/" repobase "-" br)
+                # COMPAT: legacy layout <repo>/.worktrees/<name>.
+                # Remove once all legacy worktrees have been drained via wt rm.
+                match_legacy = (wt == repo "/.worktrees/" br)
+                if (match_sibling || match_legacy) {
                     cmd = "stat -c %Y \"" wt "/.git\" 2>/dev/null || stat -f %m \"" wt "/.git\" 2>/dev/null || echo 0"
                     cmd | getline ts
                     close(cmd)
@@ -40,19 +47,21 @@ process_repo() {
     fi
 }
 
+# Find git repos by looking for .git directories.
+# Fan out find across top-level dirs in parallel, same as local worker pool.
 {
-    # Check home root for .worktrees
-    [ -d "$home/.worktrees" ] && echo "$home/.worktrees"
+    # Check home root
+    [ -d "$home/.git" ] && echo "$home"
     # Fan out find across each top-level dir
     for d in "$home"/*/; do
         [ -d "$d" ] || continue
         name=$(basename "$d")
         case "$name" in .*) continue ;; esac
-        find "$d" -maxdepth 9 -type d \( -name .worktrees -print -prune -o -name '.*' -prune \) &
+        find "$d" -maxdepth 9 -type d \( -name .git -printf '%h\n' -prune -o -name '.*' -prune \) 2>/dev/null &
     done
     wait
-} | while IFS= read -r wt_dir; do
-    process_repo "${wt_dir%/.worktrees}"
+} | sort -u | while IFS= read -r repo; do
+    process_repo "$repo"
 done
 `
 	out, err := ssh.Run(host, script)
@@ -71,7 +80,7 @@ done
 		}
 		e := worktree.Entry{
 			Dir:  parts[0],
-			Name: path.Base(parts[0]),
+			Name: parts[1],
 			Repo: parts[2],
 			Host: host,
 		}

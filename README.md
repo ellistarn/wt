@@ -61,7 +61,7 @@ Flags:
 `wt` glues together Git, OpenCode, and SSH.
 
 **Git** — Every command pulls the repo root (`git pull --ff-only --prune`).
-Create adds a worktree at `<repo>/.worktrees/<name>` on a new branch with
+Create adds a worktree at `<repo>-<name>` (a sibling directory) on a new branch with
 `origin/<root-branch>` as its upstream, so worktrees always start from the
 latest remote state and merge detection stays accurate against a fresh upstream.
 Remove deletes the worktree directory and force-deletes the branch.

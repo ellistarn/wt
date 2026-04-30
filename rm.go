@@ -213,7 +213,7 @@ func cmdRmBatch() {
 
 		if isRemovable(status) {
 			host := hostFor(e)
-			if err := git.WorktreeRemove(host, e.Repo, e.Name); err != nil {
+			if err := git.WorktreeRemove(host, e.Repo, e.Name, e.Dir); err != nil {
 				errMsg = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
 			} else {
 				status = "removed"
@@ -267,7 +267,7 @@ func cmdRmTargeted(name string) {
 		die("worktree %q not found", name)
 	}
 	host := hostFor(entry)
-	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name); err != nil {
+	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name, entry.Dir); err != nil {
 		die("%v", err)
 	}
 	display.PrintTable([]display.Row{{

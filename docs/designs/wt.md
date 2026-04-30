@@ -18,9 +18,10 @@ resuming trivial.
 
 ## Model
 
-A **worktree** is a git worktree at `<repo>/.worktrees/<name>`, where `name`
-equals the branch name. The worktree directory is the primary key. Worktrees are
-created per unit of work and cleaned up separately when the branch lands.
+A **worktree** is a git worktree at `<repo>-<name>`, a sibling of the repo
+directory, where `name` equals the branch name. The worktree directory is the
+primary key. Worktrees are created per unit of work and cleaned up separately
+when the branch lands.
 
 The **root branch** is whatever branch the repo root has checked out at worktree
 creation time (typically `main`). Each worktree records `origin/<root-branch>` as
@@ -65,7 +66,7 @@ laptop
   opencode serve                     # auto-started by wt, port 5096
        │
   wt <name> ──> opencode attach http://localhost:5096
-                  --dir <repo>/.worktrees/<name>
+                  --dir <repo>-<name>
                   --session <id>
 ```
 
@@ -137,7 +138,7 @@ Create or resume a worktree.
   latest remote state.
 - With `name`: pull the repo's current branch (best-effort) to keep it fresh
   for future worktree creation and merge detection. Resume
-  `<repo>/.worktrees/<name>`. Attach. Pull again on exit.
+  `<repo>-<name>`. Attach. Pull again on exit.
 
 ### `wt -r <path>`
 
