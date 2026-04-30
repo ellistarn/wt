@@ -335,17 +335,44 @@ func attach(serverURL, dir, sessionID string) error {
 }
 
 // runTUI runs a TUI command as a subprocess, letting it own the terminal.
-// Terminal signals are ignored in the parent so the child handles them.
-// The TUI's alternate screen buffer handles cleanup automatically on exit.
+// The parent catches SIGHUP/SIGTERM and forwards SIGTERM to the child,
+// preventing orphaned "opencode attach" processes from lingering with ppid 1
+// after a terminal close.
+//
+// The child stays in the parent's process group (no Setpgid) so it inherits
+// the terminal's foreground group and can do normal terminal I/O.
 func runTUI(cmd *exec.Cmd) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// Let the child handle all terminal signals; parent just waits.
+	// Let the child handle interactive terminal signals; parent just waits.
 	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTSTP)
 
-	err := cmd.Run()
+	// Catch SIGHUP/SIGTERM so we can clean up the child process
+	// instead of dying and leaving orphans.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM)
+
+	err := cmd.Start()
+	if err != nil {
+		return err
+	}
+
+	// Wait for either the child to exit or a fatal signal.
+	doneCh := make(chan error, 1)
+	go func() { doneCh <- cmd.Wait() }()
+
+	select {
+	case err = <-doneCh:
+		// Child exited normally or with an error.
+	case <-sigCh:
+		// Terminal died (SIGHUP) or we got SIGTERM — kill the child
+		// and exit.
+		cmd.Process.Signal(syscall.SIGTERM)
+		<-doneCh
+		os.Exit(1)
+	}
 
 	if err != nil {
 		// Forward the child's exit code.
