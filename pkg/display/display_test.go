@@ -60,11 +60,20 @@ func TestFormatDuration(t *testing.T) {
 }
 
 func TestFormatRepo(t *testing.T) {
+	home, _ := os.UserHomeDir()
 	tests := []struct {
 		repo string
 		want string
 	}{
-		{"/home/user/src/github.com/acme/project", "~/.../github.com/acme/project"},
+		// Home dir itself
+		{home, "~"},
+		// Short path under home — no elision
+		{home + "/.worktrees/abc1234", "~/.worktrees/abc1234"},
+		// Medium path under home — no elision
+		{home + "/src/acme/project", "~/src/acme/project"},
+		// Long path under home — elide middle
+		{home + "/go/src/github.com/acme/project", "~/.../github.com/acme/project"},
+		// Short absolute path not under home
 		{"/short/path", "/short/path"},
 	}
 	for _, tt := range tests {
@@ -76,22 +85,25 @@ func TestFormatRepo(t *testing.T) {
 }
 
 func TestFormatURI(t *testing.T) {
+	home, _ := os.UserHomeDir()
 	tests := []struct {
 		host string
-		repo string
+		dir  string
 		want string
 	}{
-		// Local worktree (empty host) gets localhost.
-		{"", "/home/user/src/github.com/acme/project", "localhost:5096/~/.../github.com/acme/project"},
+		// Local worktree (empty host) gets localhost, long path elided.
+		{"", home + "/go/src/github.com/acme/project-abc", "localhost:5096/~/.../github.com/acme/project-abc"},
 		// Remote worktree keeps the provided host.
-		{"devbox", "/home/user/src/github.com/acme/project", "devbox:5096/~/.../github.com/acme/project"},
-		// Short repo path passes through unshortened.
+		{"devbox", home + "/go/src/github.com/acme/project-abc", "devbox:5096/~/.../github.com/acme/project-abc"},
+		// Short path not under home.
 		{"", "/short/path", "localhost:5096/short/path"},
+		// Short path under home — no elision.
+		{"", home + "/.worktrees/abc1234", "localhost:5096/~/.worktrees/abc1234"},
 	}
 	for _, tt := range tests {
-		got := formatURI(tt.host, tt.repo, 5096)
+		got := formatURI(tt.host, tt.dir, 5096)
 		if got != tt.want {
-			t.Errorf("formatURI(%q, %q, 5096) = %q, want %q", tt.host, tt.repo, got, tt.want)
+			t.Errorf("formatURI(%q, %q, 5096) = %q, want %q", tt.host, tt.dir, got, tt.want)
 		}
 	}
 }

@@ -162,7 +162,13 @@ func walkDir(dir string, depth int, fn func(repo string)) []string {
 }
 
 // listInRepo lists worktrees within a single local repo.
+// Skips worktree checkouts (.git is a file) to avoid duplicate discovery —
+// git worktree list returns the same results from any worktree of a repo.
 func listInRepo(repo string) []worktree.Entry {
+	info, err := os.Lstat(filepath.Join(repo, ".git"))
+	if err != nil || !info.IsDir() {
+		return nil // .git file = worktree checkout, skip
+	}
 	b, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return nil
@@ -201,21 +207,14 @@ func parseWorktreeList(porcelain, repo string) []worktree.Entry {
 	return entries
 }
 
-// matchWorktree checks if a worktree path is wt-managed and returns the Entry.
+// matchWorktree checks if a worktree entry is a non-root worktree (i.e., not
+// the repo's main checkout). Every non-root worktree reported by git worktree
+// list is considered wt-managed — no path-pattern matching needed.
 func matchWorktree(wtPath, branch, repo string) (worktree.Entry, bool) {
-	if branch == "" {
+	if branch == "" || wtPath == repo {
 		return worktree.Entry{}, false
 	}
-	// Sibling layout: <parent>/<repobase>-<name>
-	if wtPath == worktree.WorktreeDir(repo, branch) {
-		return newEntry(branch, wtPath, repo), true
-	}
-	// COMPAT: legacy layout <repo>/.worktrees/<name>. Remove once all
-	// legacy worktrees have been drained via wt rm.
-	if matchLegacyWorktree(wtPath, branch, repo) {
-		return newEntry(branch, wtPath, repo), true
-	}
-	return worktree.Entry{}, false
+	return newEntry(branch, wtPath, repo), true
 }
 
 func newEntry(name, dir, repo string) worktree.Entry {
@@ -224,14 +223,4 @@ func newEntry(name, dir, repo string) worktree.Entry {
 		e.CreatedAt = info.ModTime()
 	}
 	return e
-}
-
-// COMPAT: matchLegacyWorktree matches the old <repo>/.worktrees/<name> layout.
-// Remove once all legacy worktrees have been drained via wt rm.
-func matchLegacyWorktree(wtPath, branch, repo string) bool {
-	prefix := repo + "/.worktrees/"
-	if !strings.HasPrefix(wtPath, prefix) {
-		return false
-	}
-	return strings.TrimPrefix(wtPath, prefix) == branch
 }

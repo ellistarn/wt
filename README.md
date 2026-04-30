@@ -53,6 +53,9 @@ wt rm <name>              Remove a specific worktree unconditionally
 
 Flags:
   -r, --remote              Operate on the remote dev desktop
+  --root <dir>              Directory for new worktrees, relative to repo root
+                              (default: .. — sibling to the repo)
+                              Example: --root .worktrees
   -h, --help                Show this help
 ```
 
@@ -61,9 +64,11 @@ Flags:
 `wt` glues together Git, OpenCode, and SSH.
 
 **Git** — Every command pulls the repo root (`git pull --ff-only --prune`).
-Create adds a worktree at `<repo>-<name>` (a sibling directory) on a new branch with
-`origin/<root-branch>` as its upstream, so worktrees always start from the
-latest remote state and merge detection stays accurate against a fresh upstream.
+Create adds a worktree at `<root>/<name>` (default root `..`, placing it as a
+sibling directory) on a new branch with `origin/<root-branch>` as its upstream,
+so worktrees always start from the latest remote state and merge detection stays
+accurate against a fresh upstream. Use `--root .worktrees` when the repo is
+`$HOME` and the parent directory is not writable.
 Remove deletes the worktree directory and force-deletes the branch.
 
 **OpenCode** — `wt` auto-starts `opencode serve` on port 5096 as a detached

@@ -21,12 +21,24 @@ func main() {
 
 	// Parse global flags
 	remote := false
+	root := ""
 	var remaining []string
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-r", "--remote":
+		switch {
+		case args[i] == "-r" || args[i] == "--remote":
 			remote = true
-		case "-h", "--help":
+		case args[i] == "--root":
+			i++
+			if i >= len(args) {
+				die("--root requires a directory path")
+			}
+			root = args[i]
+		case strings.HasPrefix(args[i], "--root="):
+			root = strings.TrimPrefix(args[i], "--root=")
+			if root == "" {
+				die("--root requires a directory path")
+			}
+		case args[i] == "-h" || args[i] == "--help":
 			printUsage()
 			os.Exit(0)
 		default:
@@ -49,14 +61,14 @@ func main() {
 	}
 
 	if remote {
-		cmdRemote(remaining)
+		cmdRemote(remaining, root)
 	} else {
-		cmdLocal(remaining)
+		cmdLocal(remaining, root)
 	}
 }
 
 // cmdLocal handles: wt [name]
-func cmdLocal(args []string) {
+func cmdLocal(args []string, root string) {
 	if err := opencode.EnsureLocalServer(); err != nil {
 		die("%v", err)
 	}
@@ -69,11 +81,14 @@ func cmdLocal(args []string) {
 			die("not in a git repo")
 		}
 		name := worktree.GenerateName()
-		wtDir := worktree.WorktreeDir(repo, name)
+		if root == "" {
+			root = worktree.DefaultRoot
+		}
+		wtDir := worktree.WorktreeDir(repo, root, name)
 		if err := git.Pull("", repo); err != nil {
 			die("failed to pull: %v", err)
 		}
-		if err := git.WorktreeAdd("", repo, name); err != nil {
+		if err := git.WorktreeAdd("", repo, name, wtDir); err != nil {
 			die("failed to create worktree: %v", err)
 		}
 		if err := attach(serverURL, wtDir, ""); err != nil {
@@ -134,7 +149,7 @@ func cmdLocal(args []string) {
 }
 
 // cmdRemote handles: wt -r <path>
-func cmdRemote(args []string) {
+func cmdRemote(args []string, root string) {
 	if len(args) == 0 {
 		die("remote mode requires a repo path: wt -r <path>")
 	}
@@ -159,11 +174,14 @@ func cmdRemote(args []string) {
 
 	// Create new worktree
 	name := worktree.GenerateName()
-	wtDir := worktree.WorktreeDir(repo, name)
+	if root == "" {
+		root = worktree.DefaultRoot
+	}
+	wtDir := worktree.WorktreeDir(repo, root, name)
 	if err := git.Pull(host, repo); err != nil {
 		die("failed to pull: %v", err)
 	}
-	if err := git.WorktreeAdd(host, repo, name); err != nil {
+	if err := git.WorktreeAdd(host, repo, name, wtDir); err != nil {
 		die("failed to create remote worktree: %v", err)
 	}
 	if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
@@ -298,6 +316,9 @@ Status:
 
 Flags:
   -r, --remote              Operate on the remote dev desktop
+  --root <dir>              Directory for new worktrees, relative to repo root
+                              (default: .. — sibling to the repo)
+                              Example: --root .worktrees
   -h, --help                Show this help
 `)
 	fmt.Println(usage)
