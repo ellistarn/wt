@@ -41,33 +41,46 @@ func TestAttachedDirs(t *testing.T) {
 	}
 }
 
-func TestParseAttachDir(t *testing.T) {
+func TestParseAttachProcess(t *testing.T) {
 	tests := []struct {
-		name    string
-		line    string
-		wantDir string
+		name     string
+		line     string
+		wantPID  int
+		wantPPID int
+		wantDir  string
 	}{
 		{
-			name:    "node wrapper",
-			line:    "/usr/local/bin/node /usr/local/bin/opencode attach http://localhost:5096 --dir /home/me/project-fix-auth",
-			wantDir: "/home/me/project-fix-auth",
+			name:     "live node wrapper",
+			line:     "  1234  5678 /usr/local/bin/node /usr/local/bin/opencode attach http://localhost:5096 --dir /home/me/project-fix-auth",
+			wantPID:  1234,
+			wantPPID: 5678,
+			wantDir:  "/home/me/project-fix-auth",
 		},
 		{
-			name:    "native binary",
-			line:    "/usr/lib/opencode/bin/opencode attach http://localhost:5096 --dir /home/me/project-fix-auth",
-			wantDir: "/home/me/project-fix-auth",
+			name:     "live native binary",
+			line:     "  2345  6789 /usr/lib/opencode/bin/opencode attach http://localhost:5096 --dir /home/me/project-fix-auth",
+			wantPID:  2345,
+			wantPPID: 6789,
+			wantDir:  "/home/me/project-fix-auth",
+		},
+		{
+			name:     "orphan (ppid 1)",
+			line:     " 87517     1 /opt/homebrew/bin/opencode attach http://localhost:5096 --dir /Users/me/kro/.worktrees/bb2dce7",
+			wantPID:  87517,
+			wantPPID: 1,
+			wantDir:  "/Users/me/kro/.worktrees/bb2dce7",
 		},
 		{
 			name: "bare opencode ignored",
-			line: "/usr/local/bin/opencode",
+			line: "  1000  2000 /usr/local/bin/opencode",
 		},
 		{
 			name: "server process ignored",
-			line: "/usr/local/bin/opencode serve --port 5096",
+			line: "  1000  2000 /usr/local/bin/opencode serve --port 5096",
 		},
 		{
 			name: "unrelated process",
-			line: "/usr/bin/vim",
+			line: "  1000  2000 /usr/bin/vim",
 		},
 		{
 			name: "empty line",
@@ -75,15 +88,25 @@ func TestParseAttachDir(t *testing.T) {
 		},
 		{
 			name: "attach without --dir",
-			line: "/usr/local/bin/opencode attach http://localhost:5096",
+			line: "  1000  2000 /usr/local/bin/opencode attach http://localhost:5096",
+		},
+		{
+			name: "header line",
+			line: "  PID  PPID ARGS",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseAttachDir(tt.line)
-			if got != tt.wantDir {
-				t.Errorf("got %q, want %q", got, tt.wantDir)
+			pid, ppid, dir := parseAttachProcess(tt.line)
+			if pid != tt.wantPID {
+				t.Errorf("pid = %d, want %d", pid, tt.wantPID)
+			}
+			if ppid != tt.wantPPID {
+				t.Errorf("ppid = %d, want %d", ppid, tt.wantPPID)
+			}
+			if dir != tt.wantDir {
+				t.Errorf("dir = %q, want %q", dir, tt.wantDir)
 			}
 		})
 	}
