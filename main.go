@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -80,7 +81,7 @@ func cmdLocal(args []string, root string) {
 		if err != nil {
 			die("not in a git repo")
 		}
-		name := worktree.GenerateName()
+		name := worktree.GenerateName(filepath.Base(repo))
 		if root == "" {
 			root = worktree.DefaultRoot
 		}
@@ -173,7 +174,7 @@ func cmdRemote(args []string, root string) {
 	}
 
 	// Create new worktree
-	name := worktree.GenerateName()
+	name := worktree.GenerateName(filepath.Base(args[0]))
 	if root == "" {
 		root = worktree.DefaultRoot
 	}

@@ -7,12 +7,12 @@ import (
 )
 
 func TestGenerateName(t *testing.T) {
-	hex7 := regexp.MustCompile(`^[0-9a-f]{7}$`)
+	nameRe := regexp.MustCompile(`^MyProject-[0-9a-f]{7}$`)
 	seen := map[string]bool{}
 	for i := 0; i < 1000; i++ {
-		name := GenerateName()
-		if !hex7.MatchString(name) {
-			t.Fatalf("GenerateName() = %q, want 7 lowercase hex chars", name)
+		name := GenerateName("MyProject")
+		if !nameRe.MatchString(name) {
+			t.Fatalf("GenerateName() = %q, want MyProject-<7 hex chars>", name)
 		}
 		seen[name] = true
 	}

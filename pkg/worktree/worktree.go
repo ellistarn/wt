@@ -33,15 +33,17 @@ type Entry struct {
 	Attached  bool      // true if a TUI client is attached to this worktree
 }
 
-// GenerateName returns a short random hex name for a new worktree.
-// 7 hex chars = 28 bits of entropy (~268M namespace), sufficient for
-// collision-free operation across 100k+ worktrees.
-func GenerateName() string {
+// GenerateName returns a project-scoped name for a new worktree.
+// Format: <project>-<hex> where project is the caller-supplied name
+// and hex is 7 random hex chars (28 bits of entropy, ~268M namespace).
+// The hyphen keeps the name flat — the same string is used as the git
+// branch name, the worktree directory name, and the display label.
+func GenerateName(project string) string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic("crypto/rand failed: " + err.Error())
 	}
-	return hex.EncodeToString(b[:])[:7]
+	return project + "-" + hex.EncodeToString(b[:])[:7]
 }
 
 // Sort sorts entries by most recent activity (UpdatedAt), newest first.
