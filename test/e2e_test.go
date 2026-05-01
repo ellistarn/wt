@@ -285,6 +285,12 @@ func (e *testEnv) rootWorktreeExists(root, name string) bool {
 	return err == nil
 }
 
+func (e *testEnv) branchExists(name string) bool {
+	e.t.Helper()
+	cmd := exec.Command("git", "-C", e.repo, "rev-parse", "--verify", "refs/heads/"+name)
+	return cmd.Run() == nil
+}
+
 func (e *testEnv) addChildWorktree(name string) string {
 	e.t.Helper()
 	wtDir := filepath.Join(e.repo, ".worktrees", name)
@@ -408,6 +414,28 @@ func TestTargetedRm_PushedUnmerged(t *testing.T) {
 	assertContains(t, out, "removed")
 	if env.worktreeExists("in-review") {
 		t.Error("targeted rm should remove pushed unmerged worktree")
+	}
+}
+
+// TestTargetedRm_RegressionOrphanedBranch verifies that wt rm deletes the
+// branch even when the worktree directory has already been removed externally.
+// Previously, git worktree remove would fail on the missing directory and the
+// early return skipped git branch -D, orphaning the branch.
+func TestTargetedRm_RegressionOrphanedBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+	wtDir := env.addWorktree("orphan-test")
+
+	// Simulate external deletion of the worktree directory.
+	os.RemoveAll(wtDir)
+
+	out := env.wt("rm", "orphan-test")
+	assertContains(t, out, "removed")
+	if env.branchExists("orphan-test") {
+		t.Error("branch should be deleted even when worktree directory is already gone")
 	}
 }
 
