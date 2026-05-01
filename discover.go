@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/ellistarn/wt/pkg/discover"
@@ -42,8 +43,17 @@ func findWorktree(name string) (worktree.Entry, bool) {
 	}
 
 	all := append(local, rr.entries...)
+	// Exact match first, then suffix match so users can type just the
+	// hash portion of a project-scoped name (e.g. "799291a" matches
+	// "Jetstream-799291a").
 	for _, e := range all {
 		if e.Name == name {
+			return e, true
+		}
+	}
+	suffix := "-" + name
+	for _, e := range all {
+		if strings.HasSuffix(e.Name, suffix) {
 			return e, true
 		}
 	}
