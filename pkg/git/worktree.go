@@ -44,39 +44,43 @@ func Pull(host, repo string) error {
 // wtDir is the worktree's actual path on disk (may be sibling or child layout).
 // The caller's classification logic has already confirmed safety.
 func WorktreeRemove(host, repo, name, wtDir string) error {
-	args := []string{"worktree", "remove", wtDir}
-	out, err := runCapture(host, repo, args...)
-	if err != nil {
-		return fmt.Errorf("git worktree remove: %w", err)
-	}
-	logCmd(host, repo, out, args...)
-	// Force delete the branch. The caller's classification logic has already
-	// confirmed this worktree is safe to remove (merged, stale, or empty),
-	// which is stricter than git's own -d merge check.
-	branchArgs := []string{"branch", "-D", name}
-	out, err = runGit(host, repo, branchArgs...)
-	logCmd(host, repo, out, branchArgs...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", name, err)
-	}
+	removeWorktreeAndBranch(host, repo, name, wtDir, false)
 	return nil
 }
 
 // WorktreeForceRemove removes the worktree and branch without safety checks.
 // wtDir is the worktree's actual path on disk (may be sibling or child layout).
 func WorktreeForceRemove(host, repo, name, wtDir string) error {
-	args := []string{"worktree", "remove", "--force", wtDir}
+	removeWorktreeAndBranch(host, repo, name, wtDir, true)
+	return nil
+}
+
+// removeWorktreeAndBranch deregisters the worktree and deletes its branch.
+// The two operations are independent — a missing worktree directory must not
+// prevent the branch from being cleaned up.
+func removeWorktreeAndBranch(host, repo, name, wtDir string, force bool) {
+	// Step 1: try to deregister the worktree directory.
+	args := []string{"worktree", "remove", wtDir}
+	if force {
+		args = []string{"worktree", "remove", "--force", wtDir}
+	}
 	out, err := runCapture(host, repo, args...)
 	if err != nil {
-		return fmt.Errorf("git worktree remove --force: %w", err)
+		// Directory already gone or other issue — prune stale registrations
+		// so git no longer thinks the branch is checked out.
+		fmt.Fprintf(os.Stderr, "warning: git worktree remove failed for %s: %v\n", name, err)
+		pruneArgs := []string{"worktree", "prune"}
+		pruneOut, _ := runCapture(host, repo, pruneArgs...)
+		logCmd(host, repo, pruneOut, pruneArgs...)
+	} else {
+		logCmd(host, repo, out, args...)
 	}
-	logCmd(host, repo, out, args...)
-	// Force delete the branch regardless of merge status.
+
+	// Step 2: always delete the branch, regardless of step 1's outcome.
 	branchArgs := []string{"branch", "-D", name}
 	out, err = runGit(host, repo, branchArgs...)
 	logCmd(host, repo, out, branchArgs...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", name, err)
 	}
-	return nil
 }
