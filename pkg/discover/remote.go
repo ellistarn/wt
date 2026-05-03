@@ -2,6 +2,7 @@ package discover
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
@@ -25,12 +26,15 @@ process_repo() {
             /^worktree / { wt=$2 }
             /^branch / {
                 br=$2; sub(/^refs\/heads\//, "", br)
-                if (wt != repo) {
+            }
+            /^$/ {
+                if (wt != "" && wt != repo) {
                     cmd = "stat -c %Y \"" wt "/.git\" 2>/dev/null || stat -f %m \"" wt "/.git\" 2>/dev/null || echo 0"
                     cmd | getline ts
                     close(cmd)
                     print wt "\t" br "\t" repo "\t" ts
                 }
+                wt=""; br=""
             }
         '
     fi
@@ -67,11 +71,13 @@ done
 		if len(parts) < 3 {
 			continue
 		}
+		dir := parts[0]
 		e := worktree.Entry{
-			Dir:  parts[0],
-			Name: parts[1],
-			Repo: parts[2],
-			Host: host,
+			Dir:    dir,
+			Name:   path.Base(dir),
+			Repo:   parts[2],
+			Branch: parts[1], // empty if detached
+			Host:   host,
 		}
 		if len(parts) >= 4 {
 			if ts, err := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64); err == nil {

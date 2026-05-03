@@ -71,10 +71,19 @@ func classifyAll(all []worktree.Entry, pulled pullResult) []string {
 					statuses[re.idx] = "working"
 					continue
 				}
+				if e.Branch == "" {
+					// No branch to classify against upstream; use simple status.
+					batchEntries = append(batchEntries, git.ClassifyEntry{
+						Dir:  e.Dir,
+						Repo: e.Repo,
+					})
+					batchIdxs = append(batchIdxs, re.idx)
+					continue
+				}
 				batchEntries = append(batchEntries, git.ClassifyEntry{
 					Dir:    e.Dir,
 					Repo:   e.Repo,
-					Branch: e.Name,
+					Branch: e.Branch,
 				})
 				batchIdxs = append(batchIdxs, re.idx)
 			}
@@ -123,9 +132,21 @@ func classifyStatus(e worktree.Entry) string {
 	if !git.IsClean(host, e.Dir) {
 		return "dirty"
 	}
-	unique := git.UniqueCommitCount(host, e.Repo, e.Name)
+
+	// Worktrees with no branch (detached HEAD) have no upstream to classify against.
+	if e.Branch == "" {
+		if e.SessionID == "" {
+			return "empty"
+		}
+		if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
+			return "stale"
+		}
+		return "idle"
+	}
+
+	unique := git.UniqueCommitCount(host, e.Repo, e.Branch)
 	if unique > 0 {
-		if git.IsMerged(host, e.Repo, e.Name) {
+		if git.IsMerged(host, e.Repo, e.Branch) {
 			return "merged"
 		}
 		return "committed"
@@ -143,7 +164,7 @@ func classifyStatus(e worktree.Entry) string {
 	// a proper ancestor of upstream (behind, not at the same commit).
 	// Only checked when a session exists — a worktree with no session
 	// never had work to merge.
-	if git.IsBehindUpstream(host, e.Repo, e.Name) {
+	if git.IsBehindUpstream(host, e.Repo, e.Branch) {
 		return "merged"
 	}
 
@@ -160,6 +181,16 @@ func classifyStatus(e worktree.Entry) string {
 func classifyFromResult(e worktree.Entry, clean bool, unique int, merged bool, behind bool) string {
 	if !clean {
 		return "dirty"
+	}
+	// Detached worktrees have no branch — ignore ref-dependent results.
+	if e.Branch == "" {
+		if e.SessionID == "" {
+			return "empty"
+		}
+		if !e.UpdatedAt.IsZero() && time.Since(e.UpdatedAt) > opencode.StaleThreshold {
+			return "stale"
+		}
+		return "idle"
 	}
 	if unique > 0 {
 		if merged {
@@ -213,7 +244,7 @@ func cmdRmBatch() {
 
 		if isRemovable(status) {
 			host := hostFor(e)
-			if err := git.WorktreeRemove(host, e.Repo, e.Name, e.Dir); err != nil {
+			if err := git.WorktreeRemove(host, e.Repo, e.Branch, e.Dir); err != nil {
 				errMsg = strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " ")
 			} else {
 				status = "removed"
@@ -267,7 +298,7 @@ func cmdRmTargeted(name string) {
 		die("worktree %q not found", name)
 	}
 	host := hostFor(entry)
-	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Name, entry.Dir); err != nil {
+	if err := git.WorktreeForceRemove(host, entry.Repo, entry.Branch, entry.Dir); err != nil {
 		die("%v", err)
 	}
 	display.PrintTable([]display.Row{{

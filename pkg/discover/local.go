@@ -211,14 +211,19 @@ func parseWorktreeList(porcelain, repo string) []worktree.Entry {
 // the repo's main checkout). Every non-root worktree reported by git worktree
 // list is considered wt-managed — no path-pattern matching needed.
 func matchWorktree(wtPath, branch, repo string) (worktree.Entry, bool) {
-	if branch == "" || wtPath == repo {
+	if wtPath == repo {
 		return worktree.Entry{}, false
 	}
-	return newEntry(branch, wtPath, repo), true
+	return newEntry(wtPath, branch, repo), true
 }
 
-func newEntry(name, dir, repo string) worktree.Entry {
-	e := worktree.Entry{Name: name, Dir: dir, Repo: repo}
+func newEntry(dir, branch, repo string) worktree.Entry {
+	e := worktree.Entry{
+		Name:   filepath.Base(dir),
+		Dir:    dir,
+		Repo:   repo,
+		Branch: branch,
+	}
 	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 		e.CreatedAt = info.ModTime()
 	}

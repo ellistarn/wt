@@ -40,25 +40,27 @@ func Pull(host, repo string) error {
 	return nil
 }
 
-// WorktreeRemove removes the worktree directory and force-deletes the branch.
+// WorktreeRemove removes the worktree directory and deletes the branch.
 // wtDir is the worktree's actual path on disk (may be sibling or child layout).
+// branch may be empty for detached worktrees (skips branch deletion).
 // The caller's classification logic has already confirmed safety.
-func WorktreeRemove(host, repo, name, wtDir string) error {
-	removeWorktreeAndBranch(host, repo, name, wtDir, false)
+func WorktreeRemove(host, repo, branch, wtDir string) error {
+	removeWorktreeAndBranch(host, repo, branch, wtDir, false)
 	return nil
 }
 
 // WorktreeForceRemove removes the worktree and branch without safety checks.
 // wtDir is the worktree's actual path on disk (may be sibling or child layout).
-func WorktreeForceRemove(host, repo, name, wtDir string) error {
-	removeWorktreeAndBranch(host, repo, name, wtDir, true)
+// branch may be empty for detached worktrees (skips branch deletion).
+func WorktreeForceRemove(host, repo, branch, wtDir string) error {
+	removeWorktreeAndBranch(host, repo, branch, wtDir, true)
 	return nil
 }
 
 // removeWorktreeAndBranch deregisters the worktree and deletes its branch.
 // The two operations are independent — a missing worktree directory must not
 // prevent the branch from being cleaned up.
-func removeWorktreeAndBranch(host, repo, name, wtDir string, force bool) {
+func removeWorktreeAndBranch(host, repo, branch, wtDir string, force bool) {
 	// Step 1: try to deregister the worktree directory.
 	args := []string{"worktree", "remove", wtDir}
 	if force {
@@ -68,7 +70,7 @@ func removeWorktreeAndBranch(host, repo, name, wtDir string, force bool) {
 	if err != nil {
 		// Directory already gone or other issue — prune stale registrations
 		// so git no longer thinks the branch is checked out.
-		fmt.Fprintf(os.Stderr, "warning: git worktree remove failed for %s: %v\n", name, err)
+		fmt.Fprintf(os.Stderr, "warning: git worktree remove failed for %s: %v\n", wtDir, err)
 		pruneArgs := []string{"worktree", "prune"}
 		pruneOut, _ := runCapture(host, repo, pruneArgs...)
 		logCmd(host, repo, pruneOut, pruneArgs...)
@@ -76,11 +78,13 @@ func removeWorktreeAndBranch(host, repo, name, wtDir string, force bool) {
 		logCmd(host, repo, out, args...)
 	}
 
-	// Step 2: always delete the branch, regardless of step 1's outcome.
-	branchArgs := []string{"branch", "-D", name}
-	out, err = runGit(host, repo, branchArgs...)
-	logCmd(host, repo, out, branchArgs...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", name, err)
+	// Step 2: delete the branch if one exists (detached worktrees have no branch).
+	if branch != "" {
+		branchArgs := []string{"branch", "-D", branch}
+		out, err = runGit(host, repo, branchArgs...)
+		logCmd(host, repo, out, branchArgs...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", branch, err)
+		}
 	}
 }
