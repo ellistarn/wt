@@ -60,6 +60,7 @@ type mockSession struct {
 		Created int64 `json:"created"`
 		Updated int64 `json:"updated"`
 	} `json:"time"`
+	Tokens int // tokens returned in the message endpoint (not serialized to session list)
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -171,6 +172,41 @@ func (e *testEnv) createIdleSession(dir string) {
 	e.sessionMu.Unlock()
 }
 
+func (e *testEnv) createSessionWithTokens(dir string, tokens int) {
+	e.t.Helper()
+	now := time.Now()
+	idle := now.Add(-1 * time.Hour)
+	e.sessionMu.Lock()
+	e.sessions = append(e.sessions, mockSession{
+		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
+		Directory: dir,
+		Title:     "Test instruction compliance",
+		Time: struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		}{Created: idle.UnixMilli(), Updated: idle.UnixMilli()},
+		Tokens: tokens,
+	})
+	e.sessionMu.Unlock()
+}
+
+func (e *testEnv) createStaleSession(dir string, tokens int) {
+	e.t.Helper()
+	staleTime := time.Now().Add(-5 * time.Hour)
+	e.sessionMu.Lock()
+	e.sessions = append(e.sessions, mockSession{
+		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
+		Directory: dir,
+		Title:     "Stale session",
+		Time: struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		}{Created: staleTime.UnixMilli(), Updated: staleTime.UnixMilli()},
+		Tokens: tokens,
+	})
+	e.sessionMu.Unlock()
+}
+
 func (e *testEnv) startMockServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +242,7 @@ func (e *testEnv) startMockServer() {
 		}
 
 		completed := 1 // default: completed (idle)
+		tokens := 0
 		e.sessionMu.Lock()
 		for _, s := range e.sessions {
 			if s.ID == sessionID {
@@ -213,6 +250,7 @@ func (e *testEnv) startMockServer() {
 				if age < 30*time.Second {
 					completed = 0 // streaming (active)
 				}
+				tokens = s.Tokens
 				break
 			}
 		}
@@ -229,7 +267,7 @@ func (e *testEnv) startMockServer() {
 		messages := []msg{
 			{Info: msgInfo{
 				Role:   "assistant",
-				Tokens: map[string]int{"total": 0},
+				Tokens: map[string]int{"total": tokens},
 				Time:   map[string]int{"completed": completed},
 			}},
 		}
@@ -259,9 +297,28 @@ func (e *testEnv) wt(args ...string) string {
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		e.t.Logf("wt %v: %v\n%s", args, err, out)
+		e.t.Fatalf("wt %v: %v\n%s", args, err, out)
 	}
 	return string(out)
+}
+
+func (e *testEnv) wtWithExit(args ...string) (string, int) {
+	e.t.Helper()
+	cmd := exec.Command(wtBinary, args...)
+	cmd.Dir = e.repo
+	cmd.Env = append(os.Environ(),
+		"HOME="+e.rootDir,
+		"WT_REMOTE_HOST=",
+		"WT_OPENCODE_PORT="+e.mockPort,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return string(out), exitErr.ExitCode()
+		}
+		e.t.Fatalf("unexpected error: %v", err)
+	}
+	return string(out), 0
 }
 
 func (e *testEnv) worktreeExists(name string) bool {
@@ -805,9 +862,12 @@ func TestDiff_NotFound(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	out := env.wt("diff", "nonexistent")
+	out, code := env.wtWithExit("diff", "nonexistent")
 	t.Log("output:\n" + out)
 
+	if code == 0 {
+		t.Error("expected non-zero exit code for diff nonexistent")
+	}
 	assertContains(t, out, "not found")
 }
 
@@ -875,11 +935,13 @@ func TestLs_NonDefaultBranch(t *testing.T) {
 	if !strings.Contains(out, "kroc-merged") {
 		t.Error("worktree should appear in ls output")
 	}
-	// The branch is merged into origin/krocodile (its upstream), so it should
-	// be classified as "empty" (ancestor check: unique=0 after merge, since
-	// all commits are reachable from origin/krocodile).
-	// With the old DefaultBranch code, it would show as "committed" because
-	// origin/main doesn't contain the krocodile commits.
+	// The branch is merged into origin/krocodile (its upstream), so it must NOT
+	// be classified as "committed". With the old DefaultBranch code, it would
+	// show as "committed" because origin/main doesn't contain the krocodile
+	// commits.
+	if strings.Contains(out, "committed") {
+		t.Error("worktree should not be classified as committed; upstream tracking ref is wrong")
+	}
 }
 
 // --- Child layout tests ---
@@ -1014,4 +1076,229 @@ func TestTargetedRm_LegacySiblingCompat(t *testing.T) {
 	if env.legacySiblingWorktreeExists("old-rm") {
 		t.Error("legacy sibling worktree should have been removed")
 	}
+}
+
+// --- Token formatting in ls output ---
+
+func TestLs_TokenFormatting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Small tokens: 500 → "500"
+	wt1 := env.addWorktree("tok-small")
+	env.createSessionWithTokens(wt1, 500)
+
+	// Medium tokens: 15000 → "15k"
+	wt2 := env.addWorktree("tok-medium")
+	env.createSessionWithTokens(wt2, 15000)
+
+	// Large tokens: 1500000 → "1.5M"
+	wt3 := env.addWorktree("tok-large")
+	env.createSessionWithTokens(wt3, 1500000)
+
+	// Kilo with decimal: 1500 → "1.5k"
+	wt4 := env.addWorktree("tok-kilo")
+	env.createSessionWithTokens(wt4, 1500)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	// Verify each worktree appears with the correctly formatted token string.
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "tok-small") {
+			assertContains(t, line, "500")
+		}
+		if strings.Contains(line, "tok-medium") {
+			assertContains(t, line, "15k")
+		}
+		if strings.Contains(line, "tok-large") {
+			assertContains(t, line, "1.5M")
+		}
+		if strings.Contains(line, "tok-kilo") {
+			assertContains(t, line, "1.5k")
+		}
+	}
+}
+
+// --- Session status: working (streaming detection) ---
+
+func TestLs_WorkingStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// createSession uses time.Now() → UpdatedAt is recent → mock returns completed=0 → streaming
+	wt := env.addWorktree("status-working")
+	env.createSession(wt)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "status-working")
+	assertContains(t, out, "working")
+}
+
+// --- Session status: stale ---
+
+func TestLs_StaleStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Stale session: UpdatedAt > 4h ago, no unique commits
+	wt := env.addWorktree("status-stale")
+	env.createStaleSession(wt, 42000)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "status-stale")
+	assertContains(t, out, "stale")
+	// Stale sessions must still show tokens
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "status-stale") {
+			assertContains(t, line, "42k")
+		}
+	}
+}
+
+// --- Sort ordering ---
+
+func TestLs_SortOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create worktrees with different activity times.
+	// "sort-recent" has a session updated 30min ago → most recent activity
+	wt1 := env.addWorktree("sort-recent")
+	now := time.Now()
+	env.sessionMu.Lock()
+	env.sessions = append(env.sessions, mockSession{
+		ID:        fmt.Sprintf("ses_test_%d", len(env.sessions)),
+		Directory: wt1,
+		Title:     "Recent work",
+		Time: struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		}{Created: now.Add(-1 * time.Hour).UnixMilli(), Updated: now.Add(-30 * time.Minute).UnixMilli()},
+		Tokens: 1000,
+	})
+	env.sessionMu.Unlock()
+
+	// "sort-old" has a session updated 3h ago → older activity
+	wt2 := env.addWorktree("sort-old")
+	env.sessionMu.Lock()
+	env.sessions = append(env.sessions, mockSession{
+		ID:        fmt.Sprintf("ses_test_%d", len(env.sessions)),
+		Directory: wt2,
+		Title:     "Old work",
+		Time: struct {
+			Created int64 `json:"created"`
+			Updated int64 `json:"updated"`
+		}{Created: now.Add(-4 * time.Hour).UnixMilli(), Updated: now.Add(-3 * time.Hour).UnixMilli()},
+		Tokens: 2000,
+	})
+	env.sessionMu.Unlock()
+
+	// "sort-none" has no session → sorted after those with activity
+	env.addWorktree("sort-none")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	// Find the positions of each worktree in the output
+	recentIdx := strings.Index(out, "sort-recent")
+	oldIdx := strings.Index(out, "sort-old")
+	noneIdx := strings.Index(out, "sort-none")
+
+	if recentIdx == -1 || oldIdx == -1 || noneIdx == -1 {
+		t.Fatalf("expected all worktrees in output")
+	}
+	if recentIdx > oldIdx {
+		t.Error("sort-recent should appear before sort-old (more recent activity first)")
+	}
+	if oldIdx > noneIdx {
+		t.Error("sort-old should appear before sort-none (activity before no-activity)")
+	}
+}
+
+// --- Name generation format ---
+
+func TestLs_NameFormat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// addWorktree creates branches with the exact name passed in.
+	// The real `wt` command uses GenerateName("<project>-<7hex>") to create names.
+	// Verify the branch name shows up correctly in ls output.
+	env.addWorktree("my-feature-abc1234")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "my-feature-abc1234")
+}
+
+// --- Error paths ---
+
+func TestRm_NotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out, code := env.wtWithExit("rm", "nonexistent-name")
+	t.Log("output:\n" + out)
+
+	if code == 0 {
+		t.Error("expected non-zero exit code for rm nonexistent-name")
+	}
+	assertContains(t, out, "not found")
+}
+
+func TestDiff_MissingName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out, code := env.wtWithExit("diff")
+	t.Log("output:\n" + out)
+
+	if code == 0 {
+		t.Error("expected non-zero exit code for diff without name argument")
+	}
+}
+
+func TestRm_ExtraArgs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out, code := env.wtWithExit("rm", "extra-arg", "another-arg")
+	t.Log("output:\n" + out)
+
+	if code == 0 {
+		t.Error("expected non-zero exit code for rm with extra arguments")
+	}
+	assertContains(t, out, "unexpected argument")
 }

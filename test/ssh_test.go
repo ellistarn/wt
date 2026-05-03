@@ -25,7 +25,12 @@ func newSSHTestEnv(t *testing.T) *sshTestEnv {
 	t.Helper()
 	host := os.Getenv("WT_REMOTE_HOST")
 	if host == "" {
-		t.Skip("WT_REMOTE_HOST not set, skipping SSH tests")
+		host = "localhost" // self-SSH: exercises the real SSH code path locally
+	}
+
+	// Probe: verify SSH to the host actually works.
+	if out, err := sshRunErr(host, "echo ok"); err != nil {
+		t.Skipf("SSH to %s not available (enable Remote Login for localhost): %v\n%s", host, err, out)
 	}
 
 	name := fmt.Sprintf("wt-e2e-ssh-%d-%d", time.Now().UnixNano(), rand.Intn(100000))
@@ -105,6 +110,7 @@ func (e *sshTestEnv) wt(args ...string) string {
 	e.t.Helper()
 	cmd := exec.Command(wtBinary, args...)
 	cmd.Env = append(os.Environ(),
+		"HOME="+e.rootDir,          // sandbox local discovery to test dir
 		"WT_REMOTE_HOST="+e.host,
 		"XDG_DATA_HOME="+e.dataDir, // remote data dir — wt queries it over SSH
 	)
@@ -141,6 +147,7 @@ func sshRunErr(host, script string) (string, error) {
 // --- SSH path tests ---
 
 func TestSSH_Ls_UnifiedStatus(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping SSH e2e test in short mode")
 	}
@@ -179,6 +186,7 @@ func TestSSH_Ls_UnifiedStatus(t *testing.T) {
 }
 
 func TestSSH_RemoteSessionQuery(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping SSH e2e test in short mode")
 	}
@@ -216,4 +224,52 @@ func TestSSH_RemoteSessionQuery(t *testing.T) {
 	t.Log("SSH rm dry-run output:\n" + out)
 	assertContains(t, out, "ssh-session")
 	assertContains(t, out, "keep (")
+}
+
+// TestSSH_Ls_BadHost verifies that wt ls with an unreachable WT_REMOTE_HOST
+// doesn't crash — it should print a warning to stderr and exit cleanly.
+// Uses a host that fails DNS resolution quickly so the test doesn't hang.
+func TestSSH_Ls_BadHost(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping SSH e2e test in short mode")
+	}
+
+	// Set up a local repo so wt ls has something to discover locally.
+	rootDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(rootDir); err == nil {
+		rootDir = resolved
+	}
+	bare := filepath.Join(rootDir, "origin.git")
+	gitCmd(t, "", "init", "--bare", bare)
+	repo := filepath.Join(rootDir, "repo")
+	gitCmd(t, "", "clone", bare, repo)
+	gitCmd(t, repo, "config", "user.email", "test@test.com")
+	gitCmd(t, repo, "config", "user.name", "Test")
+	gitCmd(t, repo, "commit", "--allow-empty", "-m", "initial")
+	gitCmd(t, repo, "push", "origin", "main")
+
+	cmd := exec.Command(wtBinary, "ls")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"HOME="+rootDir,
+		"WT_REMOTE_HOST=does-not-exist.invalid",
+	)
+	out, err := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("wt ls (bad host) output:\n%s", output)
+
+	// wt ls should exit 0 — remote errors are warnings, not fatal.
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			t.Errorf("expected exit 0, got %d; output:\n%s", exitErr.ExitCode(), output)
+		} else {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	// Should contain a warning about the remote being unreachable.
+	if !strings.Contains(output, "warning") {
+		t.Error("expected a warning about unreachable remote host in output")
+	}
 }
