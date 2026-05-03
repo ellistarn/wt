@@ -8,8 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -384,6 +387,66 @@ func assertContains(t *testing.T, output, substring string) {
 	if !strings.Contains(output, substring) {
 		t.Errorf("output does not contain %q:\n%s", substring, output)
 	}
+}
+
+// writeStubOpencode creates a stub shell script that replaces the real opencode
+// binary. It handles:
+//   - "opencode serve --port <port>": stays alive until killed; writes PID to $OPENCODE_PIDFILE
+//   - "opencode attach ...": exits 0 immediately
+func writeStubOpencode(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "serve" ]; then
+  if [ -n "$OPENCODE_PIDFILE" ]; then
+    echo $$ > "$OPENCODE_PIDFILE"
+  fi
+  trap 'exit 0' TERM
+  while true; do sleep 1; done
+fi
+# attach or anything else — just exit 0
+exit 0
+`
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// wtCreate runs the wt binary with the stub opencode on PATH. It sets
+// OPENCODE_PIDFILE and kills any serve process in t.Cleanup.
+func (e *testEnv) wtCreate(args ...string) string {
+	e.t.Helper()
+	stubDir := writeStubOpencode(e.t)
+	pidFile := filepath.Join(e.t.TempDir(), "opencode.pid")
+	cmd := exec.Command(wtBinary, args...)
+	cmd.Dir = e.repo
+	cmd.Env = append(os.Environ(),
+		"HOME="+e.rootDir,
+		"WT_REMOTE_HOST=",
+		"WT_OPENCODE_PORT="+e.mockPort,
+		"OPENCODE_PIDFILE="+pidFile,
+		"PATH="+stubDir+":"+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		e.t.Fatalf("wt %v: %v\n%s", args, err, out)
+	}
+
+	e.t.Cleanup(func() {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			return // no serve process was started
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return
+		}
+		syscall.Kill(pid, syscall.SIGTERM)
+	})
+
+	return string(out)
 }
 
 // --- Targeted rm tests (always removes) ---
@@ -1301,4 +1364,80 @@ func TestRm_ExtraArgs(t *testing.T) {
 		t.Error("expected non-zero exit code for rm with extra arguments")
 	}
 	assertContains(t, out, "unexpected argument")
+}
+
+// --- Create / attach tests ---
+
+// TestHelp verifies that wt --help prints usage and exits 0.
+func TestHelp(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	cmd := exec.Command(wtBinary, "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("wt --help failed: %v\n%s", err, out)
+	}
+	assertContains(t, string(out), "worktree session manager")
+}
+
+// TestCreate_NewWorktree verifies that `wt` (no args) creates a new worktree,
+// sets up the branch with upstream tracking, and attaches via the stub opencode.
+func TestCreate_NewWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out := env.wtCreate()
+	t.Log("output:\n" + out)
+
+	// Output should contain a name matching <repobase>-<7hex>
+	repoBase := filepath.Base(env.repo)
+	nameRe := regexp.MustCompile(regexp.QuoteMeta(repoBase) + `-[0-9a-f]{7}`)
+	match := nameRe.FindString(out)
+	if match == "" {
+		t.Fatalf("output does not contain a worktree name matching %s-<7hex>:\n%s", repoBase, out)
+	}
+
+	// Worktree directory should exist as a sibling of the repo (default root="..")
+	wtDir := filepath.Join(filepath.Dir(env.repo), match)
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		t.Errorf("worktree directory %s was not created", wtDir)
+	}
+
+	// git worktree list should include the new worktree
+	wtList := gitCmd(t, env.repo, "worktree", "list")
+	assertContains(t, wtList, match)
+
+	// Branch should exist with upstream set
+	upstream, err := exec.Command("git", "-C", env.repo, "for-each-ref",
+		"--format=%(upstream:short)", "refs/heads/"+match).Output()
+	if err != nil {
+		t.Fatalf("failed to query upstream for branch %s: %v", match, err)
+	}
+	upstreamRef := strings.TrimSpace(string(upstream))
+	if upstreamRef == "" {
+		t.Errorf("branch %s has no upstream set", match)
+	}
+}
+
+// TestCreate_AttachExisting verifies that `wt <name>` attaches to an existing
+// worktree (finding its latest session) via the stub opencode.
+func TestCreate_AttachExisting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wtDir := env.addWorktree("test-attach")
+	env.createSession(wtDir)
+
+	out := env.wtCreate("test-attach")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "test-attach")
 }

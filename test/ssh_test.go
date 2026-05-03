@@ -1,12 +1,18 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -272,4 +278,138 @@ func TestSSH_Ls_BadHost(t *testing.T) {
 	if !strings.Contains(output, "warning") {
 		t.Error("expected a warning about unreachable remote host in output")
 	}
+}
+
+// TestCreate_Remote verifies the full remote create flow: SSH to localhost,
+// create a worktree on the remote, tunnel to the mock server, and attach.
+// Exercises: ssh.Host, ssh.ResolveRemoteHome, ssh.ToRemotePath, git.RepoRoot(host),
+// git.WorktreeAdd(host), ssh.EnsureTunnel, opencode.EnsureRemoteServer.
+func TestCreate_Remote(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping SSH e2e test in short mode")
+	}
+
+	// Force self-SSH to localhost regardless of WT_REMOTE_HOST.
+	host := "localhost"
+	if out, err := sshRunErr(host, "echo ok"); err != nil {
+		t.Skipf("SSH to %s not available (enable Remote Login for localhost): %v\n%s", host, err, out)
+	}
+
+	// Build a minimal test repo on localhost (same machine).
+	name := fmt.Sprintf("wt-e2e-create-%d-%d", time.Now().UnixNano(), rand.Intn(100000))
+	remoteHome := strings.TrimSpace(sshRun(t, host, `cd "$HOME" && pwd -P`))
+	rootDir := remoteHome + "/" + name
+	repo := rootDir + "/repo"
+
+	sshRun(t, host, "mkdir -p "+rootDir)
+	sshRun(t, host, fmt.Sprintf(`
+		git init --bare --initial-branch=main %s/origin.git &&
+		git clone %s/origin.git %s &&
+		cd %s &&
+		git config user.email 'test@test.com' &&
+		git config user.name 'Test' &&
+		git checkout -b main &&
+		git commit --allow-empty -m 'initial' &&
+		git push origin main
+	`, rootDir, rootDir, repo, repo))
+	t.Cleanup(func() { sshRun(t, host, "rm -rf "+rootDir) })
+
+	// Start a mock OpenCode server on a random port. The tunnel will forward
+	// to this port, and EnsureRemoteServer health-checks through the tunnel,
+	// so it short-circuits without trying to start a real opencode.
+	mockPort, mockURL := startMockOpencode(t)
+	_ = mockURL
+
+	// The stub opencode must be on PATH for the attach call, which execs
+	// "opencode attach ...". Since self-SSH runs on the same machine, the
+	// local PATH override works for both the local and remote sides.
+	stubDir := writeStubOpencode(t)
+	pidFile := filepath.Join(t.TempDir(), "opencode.pid")
+
+	// Run: wt -r <repo-path>
+	// This triggers cmdRemote which:
+	// 1. ssh.Host() → reads WT_REMOTE_HOST
+	// 2. ssh.ResolveRemoteHome(host) → SSHes to resolve $HOME
+	// 3. ssh.ToRemotePath(repoPath, remoteHome) → translates path
+	// 4. git.RepoRoot(host, remotePath) → finds repo root on remote
+	// 5. git.WorktreeAdd(host, ...) → creates worktree on remote
+	// 6. ssh.EnsureTunnel(host, mockPort+1, mockPort) → tunnels
+	// 7. opencode.EnsureRemoteServer(host) → health-checks through tunnel
+	// 8. attach(...) → runs stub opencode
+	cmd := exec.Command(wtBinary, "-r", repo)
+	cmd.Env = append(os.Environ(),
+		"HOME="+remoteHome,
+		"WT_REMOTE_HOST="+host,
+		"WT_OPENCODE_PORT="+strconv.Itoa(mockPort),
+		"OPENCODE_PIDFILE="+pidFile,
+		"PATH="+stubDir+":"+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("wt -r output:\n%s", output)
+
+	t.Cleanup(func() {
+		data, readErr := os.ReadFile(pidFile)
+		if readErr != nil {
+			return
+		}
+		pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if convErr != nil {
+			return
+		}
+		syscall.Kill(pid, syscall.SIGTERM)
+	})
+
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("expected exit 0, got %d; output:\n%s", exitErr.ExitCode(), output)
+		} else {
+			t.Fatalf("unexpected error: %v\n%s", err, output)
+		}
+	}
+
+	// Output should contain a worktree name matching <repobase>-<7hex>
+	repoBase := filepath.Base(repo)
+	nameRe := regexp.MustCompile(regexp.QuoteMeta(repoBase) + `-[0-9a-f]{7}`)
+	match := nameRe.FindString(output)
+	if match == "" {
+		t.Fatalf("output does not contain a worktree name matching %s-<7hex>:\n%s", repoBase, output)
+	}
+
+	// Verify the worktree directory was created on the remote
+	repoDir := filepath.Dir(repo)
+	wtDir := repoDir + "/" + match
+	if _, sshErr := sshRunErr(host, fmt.Sprintf("test -d '%s'", wtDir)); sshErr != nil {
+		t.Errorf("worktree directory %s was not created on remote", wtDir)
+	}
+}
+
+// startMockOpencode starts a minimal mock OpenCode server that responds to
+// /global/health, /session, and /session/<id>/message. Returns the port and URL.
+func startMockOpencode(t *testing.T) (int, string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"healthy": true})
+	})
+	mux.HandleFunc("/session", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]any{})
+	})
+	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]any{})
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	url := "http://" + ln.Addr().String()
+	return port, url
 }
