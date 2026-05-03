@@ -20,7 +20,7 @@ func IsClean(host, dir string) bool {
 // its upstream tracking ref. Returns 0 if the branch has not diverged or has
 // no upstream configured.
 func UniqueCommitCount(host, repo, branch string) int {
-	upstream, err := UpstreamRef(host, repo, branch)
+	upstream, err := UpstreamRef(host, repo)
 	if err != nil {
 		return 0
 	}
@@ -40,7 +40,7 @@ func UniqueCommitCount(host, repo, branch string) int {
 // In all these cases, rev-list sees zero unique commits because the branch
 // has not diverged from the upstream's ancestry graph.
 func IsBehindUpstream(host, repo, branch string) bool {
-	upstream, err := UpstreamRef(host, repo, branch)
+	upstream, err := UpstreamRef(host, repo)
 	if err != nil {
 		return false
 	}
@@ -76,7 +76,7 @@ func IsBehindUpstream(host, repo, branch string) bool {
 // (UniqueCommitCount > 0). A branch with no divergence trivially matches
 // the target tree and would produce a false positive.
 func IsMerged(host, repo, branch string) bool {
-	upstream, err := UpstreamRef(host, repo, branch)
+	upstream, err := UpstreamRef(host, repo)
 	if err != nil {
 		return false
 	}
@@ -220,12 +220,13 @@ while IFS=$'\t' read -r dir repo branch; do
         continue
     fi
 
-    # Get upstream tracking ref for this branch
-    upstream=$(git -C "$repo" for-each-ref --format='%(upstream:short)' "refs/heads/$branch" 2>/dev/null)
-    if [ -z "$upstream" ]; then
+    # Derive upstream from repo root branch (same as local UpstreamRef).
+    root_branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ -z "$root_branch" ] || [ "$root_branch" = "HEAD" ]; then
         printf '%s\t%s\t%s\t%s\n' "$clean" "0" "false" "false"
         continue
     fi
+    upstream="origin/$root_branch"
 
     # UniqueCommitCount
     unique=$(git -C "$repo" rev-list --count "$upstream..$branch" 2>/dev/null) || unique=0

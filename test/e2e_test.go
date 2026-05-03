@@ -96,9 +96,6 @@ func (e *testEnv) addWorktree(name string) string {
 	// New default layout: <parent>/<name> (root="..")
 	wtDir := filepath.Join(filepath.Dir(e.repo), name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
-	// Set upstream tracking to match WorktreeAdd behavior.
-	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
-	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
 	return wtDir
 }
 
@@ -108,8 +105,6 @@ func (e *testEnv) addLegacySiblingWorktree(name string) string {
 	e.t.Helper()
 	wtDir := filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
-	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
-	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
 	return wtDir
 }
 
@@ -355,8 +350,6 @@ func (e *testEnv) addChildWorktree(name string) string {
 	e.t.Helper()
 	wtDir := filepath.Join(e.repo, ".worktrees", name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
-	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
-	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
 	return wtDir
 }
 
@@ -364,8 +357,6 @@ func (e *testEnv) addRootWorktree(root, name string) string {
 	e.t.Helper()
 	wtDir := filepath.Join(e.repo, root, name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
-	rootBranch := strings.TrimSpace(gitCmd(e.t, e.repo, "rev-parse", "--abbrev-ref", "HEAD"))
-	gitCmd(e.t, e.repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name)
 	return wtDir
 }
 
@@ -661,6 +652,87 @@ func TestLs_UnifiedStatus(t *testing.T) {
 	assertContains(t, out, "dirty")
 	assertContains(t, out, "batch-unpushed")
 	assertContains(t, out, "committed")
+}
+
+// TestLs_RegressionPushDashU reproduces the bug where `git push -u` overwrites
+// the branch's tracking config from origin/main to origin/<branch>. After the
+// PR merges and the remote branch is deleted (prune), the stale tracking ref
+// broke merge detection — the worktree was misclassified as idle instead of
+// merged.
+func TestLs_RegressionPushDashU(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create a branch, commit, and push with -u (overwrites tracking config)
+	wt := env.addWorktree("push-u-branch")
+	env.commitFile(wt, "feature.txt", "done", "add feature")
+	gitCmd(t, env.repo, "push", "-u", "origin", "push-u-branch")
+	env.createIdleSession(wt)
+
+	// Squash-merge into main, then prune the remote branch
+	env.squashMergeToMain("push-u-branch")
+	gitCmd(t, env.repo, "push", "origin", "--delete", "push-u-branch")
+	gitCmd(t, env.repo, "fetch", "--prune")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "push-u-branch") || !strings.Contains(out, "merged *") {
+		t.Error("worktree pushed with -u should still be detected as merged after remote branch deletion")
+	}
+}
+
+// TestLs_RegressionPushDashUNoFF reproduces the push -u bug for --no-ff merges.
+// When unique commits = 0 (branch is ancestor of upstream), IsBehindUpstream
+// must still derive the target from the root branch, not the stale tracking ref.
+func TestLs_RegressionPushDashUNoFF(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("push-u-noff")
+	env.commitFile(wt, "f.txt", "done", "feature")
+	gitCmd(t, env.repo, "push", "-u", "origin", "push-u-noff")
+	env.createIdleSession(wt)
+
+	// --no-ff merge: branch commits become ancestors of upstream
+	env.mergeToMain("push-u-noff")
+	gitCmd(t, env.repo, "push", "origin", "--delete", "push-u-noff")
+	gitCmd(t, env.repo, "fetch", "--prune")
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	if !strings.Contains(out, "push-u-noff") || !strings.Contains(out, "merged *") {
+		t.Error("no-ff merged worktree pushed with -u should be detected as merged after remote branch deletion")
+	}
+}
+
+// TestDiff_RegressionPushDashU verifies that wt diff works correctly when
+// git push -u has overwritten the branch's tracking config and the remote
+// branch has been deleted.
+func TestDiff_RegressionPushDashU(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("diff-push-u")
+	env.commitFile(wt, "feature.txt", "content", "add feature")
+	gitCmd(t, env.repo, "push", "-u", "origin", "diff-push-u")
+	gitCmd(t, env.repo, "push", "origin", "--delete", "diff-push-u")
+	gitCmd(t, env.repo, "fetch", "--prune")
+
+	out := env.wt("diff", "diff-push-u")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "feature.txt")
 }
 
 // TestLs_RegressionPrunedTrackingRef verifies that squash merge detection
@@ -981,10 +1053,9 @@ func TestDiff_NotFound(t *testing.T) {
 	assertContains(t, out, "not found")
 }
 
-// TestDiff_NonDefaultBranch verifies that wt diff uses the upstream tracking
-// ref, not the repo's default branch. Reproduces the bug where a worktree
-// branched from a non-default branch (e.g., krocodile) would diff against
-// origin/main instead of origin/<actual-base>.
+// TestDiff_NonDefaultBranch verifies that wt diff uses the root worktree's
+// branch as the comparison target. When the repo root is checked out to
+// "krocodile", diff should compare against origin/krocodile, not origin/main.
 func TestDiff_NonDefaultBranch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1013,7 +1084,8 @@ func TestDiff_NonDefaultBranch(t *testing.T) {
 }
 
 // TestLs_NonDefaultBranch verifies that wt ls correctly classifies worktrees
-// branched from a non-default branch using the upstream tracking ref.
+// when the repo root is on a non-default branch. Merge detection derives the
+// comparison target from the root worktree's branch (origin/krocodile here).
 func TestLs_NonDefaultBranch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1045,12 +1117,10 @@ func TestLs_NonDefaultBranch(t *testing.T) {
 	if !strings.Contains(out, "kroc-merged") {
 		t.Error("worktree should appear in ls output")
 	}
-	// The branch is merged into origin/krocodile (its upstream), so it must NOT
-	// be classified as "committed". With the old DefaultBranch code, it would
-	// show as "committed" because origin/main doesn't contain the krocodile
-	// commits.
+	// The branch is merged into origin/krocodile (the root branch), so it must
+	// NOT be classified as "committed".
 	if strings.Contains(out, "committed") {
-		t.Error("worktree should not be classified as committed; upstream tracking ref is wrong")
+		t.Error("worktree should not be classified as committed; root branch derivation is wrong")
 	}
 }
 
@@ -1459,15 +1529,10 @@ func TestCreate_NewWorktree(t *testing.T) {
 	wtList := gitCmd(t, env.repo, "worktree", "list")
 	assertContains(t, wtList, match)
 
-	// Branch should exist with upstream set
-	upstream, err := exec.Command("git", "-C", env.repo, "for-each-ref",
-		"--format=%(upstream:short)", "refs/heads/"+match).Output()
-	if err != nil {
-		t.Fatalf("failed to query upstream for branch %s: %v", match, err)
-	}
-	upstreamRef := strings.TrimSpace(string(upstream))
-	if upstreamRef == "" {
-		t.Errorf("branch %s has no upstream set", match)
+	// Branch should exist
+	branchList := gitCmd(t, env.repo, "branch", "--list", match)
+	if strings.TrimSpace(branchList) == "" {
+		t.Errorf("branch %s was not created", match)
 	}
 }
 

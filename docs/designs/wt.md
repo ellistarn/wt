@@ -25,11 +25,10 @@ Worktrees are created per unit of work and cleaned up separately when the branch
 lands. The root can be overridden with `--root <dir>` (e.g. `--root .worktrees`
 when the repo is `$HOME` and the parent directory is not writable).
 
-The **root branch** is whatever branch the repo root has checked out at worktree
-creation time (typically `main`). Each worktree records `origin/<root-branch>` as
-its merge target. Diff, status, and merge detection all compare the worktree's
-branch against this target. The value is set once at creation and does not change
-if the repo root later checks out a different branch.
+The **root branch** is whatever branch the repo root currently has checked out
+(typically `main`). Diff, status, and merge detection all compare the worktree's
+branch against `origin/<root-branch>`, derived at query time from the repo root's
+HEAD.
 
 A **session** is an OpenCode conversation bound to a worktree directory. Sessions
 persist on the server and carry a title (auto-generated from the first prompt)
@@ -135,8 +134,8 @@ history, and reattaching resumes the session.
 Create or resume a worktree.
 
 - No args: pull the current branch to ensure the worktree starts from the
-  latest remote state. Create a new worktree with `origin/<root-branch>` as its
-  merge target. Attach. Pull again on exit so the exit summary reflects the
+  latest remote state. Create a new worktree branched from the current HEAD.
+  Attach. Pull again on exit so the exit summary reflects the
   latest remote state.
 - With `name`: pull the repo's current branch (best-effort) to keep it fresh
   for future worktree creation and merge detection. Resume
@@ -308,7 +307,7 @@ detected by scanning local `opencode attach` processes.
 
 - The repo root checkout is clean. Worktree creation pulls the current branch,
   so conflicts or uncommitted changes would cause a failure. The checked-out
-  branch becomes the root branch for the new worktree.
+  branch becomes the base for the new worktree's commits.
 - The remote host is reachable via SSH.
 - `opencode` is available on PATH (locally and on the remote host).
 

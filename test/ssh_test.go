@@ -74,10 +74,8 @@ func (e *sshTestEnv) addWorktree(name string) string {
 	repoDir := filepath.Dir(e.repo)
 	wtDir := repoDir + "/" + repoBase + "-" + name
 	sshRun(e.t, e.host, fmt.Sprintf(
-		"cd %s && git worktree add %s -b %s && "+
-			"root=$(git rev-parse --abbrev-ref HEAD) && "+
-			"git branch --set-upstream-to=origin/$root %s",
-		e.repo, wtDir, name, name))
+		"cd %s && git worktree add %s -b %s",
+		e.repo, wtDir, name))
 	return wtDir
 }
 
