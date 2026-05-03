@@ -56,16 +56,6 @@ func RemoteServerURL() string {
 	return fmt.Sprintf("http://localhost:%d", TunnelPort())
 }
 
-// CheckHealth verifies that the OpenCode server is reachable.
-func CheckHealth(serverURL string) error {
-	resp, err := httpGet(serverURL + "/global/health")
-	if err != nil {
-		return fmt.Errorf("opencode server not reachable at %s", serverURL)
-	}
-	resp.Body.Close()
-	return nil
-}
-
 // checkHealthFast is a quick probe for use before batch operations.
 func checkHealthFast(serverURL string) error {
 	resp, err := httpGetTimeout(serverURL+"/global/health", 1*time.Second)

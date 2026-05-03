@@ -2,7 +2,6 @@ package git
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -35,16 +34,6 @@ func RepoRoot(host string, dir ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
-}
-
-// DirExists checks whether a directory exists, locally or over SSH.
-func DirExists(host, path string) bool {
-	if host == "" {
-		info, err := os.Stat(path)
-		return err == nil && info.IsDir()
-	}
-	_, err := ssh.Run(host, fmt.Sprintf("test -d '%s'", path))
-	return err == nil
 }
 
 // UpstreamRef returns the upstream tracking ref for the given branch
