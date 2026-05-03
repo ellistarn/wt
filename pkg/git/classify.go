@@ -214,6 +214,12 @@ while IFS=$'\t' read -r dir repo branch; do
         clean=true
     fi
 
+    # Detached worktrees have no branch — skip all ref-dependent logic.
+    if [ -z "$branch" ]; then
+        printf '%s\t%s\t%s\t%s\n' "$clean" "0" "false" "false"
+        continue
+    fi
+
     # Get upstream tracking ref for this branch
     upstream=$(git -C "$repo" for-each-ref --format='%(upstream:short)' "refs/heads/$branch" 2>/dev/null)
     if [ -z "$upstream" ]; then

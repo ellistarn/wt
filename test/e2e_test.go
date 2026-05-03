@@ -561,6 +561,53 @@ func TestTargetedRm_RegressionOrphanedBranch(t *testing.T) {
 
 // --- Batch tests ---
 
+// TestLs_RegressionDetachedHead verifies that worktrees with a detached HEAD
+// appear in wt ls. Previously, discovery filtered on branch being non-empty,
+// and detached worktrees have no branch line in git worktree list --porcelain,
+// so they were silently dropped.
+func TestLs_RegressionDetachedHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wtDir := env.addWorktree("detached-wt")
+	env.commitFile(wtDir, "f.txt", "work", "add file")
+
+	// Detach HEAD by checking out the current commit directly.
+	head := strings.TrimSpace(gitCmd(t, wtDir, "rev-parse", "HEAD"))
+	gitCmd(t, wtDir, "checkout", head)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "detached-wt")
+}
+
+// TestTargetedRm_RegressionDetachedHead verifies that wt rm works on a
+// worktree with a detached HEAD — it should remove the worktree directory
+// and skip branch deletion (since there's no branch checked out).
+func TestTargetedRm_RegressionDetachedHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wtDir := env.addWorktree("detached-rm")
+
+	// Detach HEAD
+	head := strings.TrimSpace(gitCmd(t, wtDir, "rev-parse", "HEAD"))
+	gitCmd(t, wtDir, "checkout", head)
+
+	out := env.wt("rm", "detached-rm")
+	assertContains(t, out, "removed")
+	if env.worktreeExists("detached-rm") {
+		t.Error("detached HEAD worktree should have been removed")
+	}
+}
+
 func TestLs_UnifiedStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
