@@ -5,9 +5,9 @@ import (
 	"os"
 )
 
-// WorktreeAdd creates a new worktree at wtDir on branch <name>. Sets the new
-// branch's upstream tracking ref to origin/<root-branch>, where root-branch is
-// whatever the repo root has checked out.
+// WorktreeAdd creates a new worktree at wtDir on branch <name>. No tracking
+// ref is set — UpstreamRef derives the comparison target from the repo root
+// at query time.
 func WorktreeAdd(host, repo, name, wtDir string) error {
 	args := []string{"worktree", "add", wtDir, "-b", name}
 	out, err := runCapture(host, repo, args...)
@@ -16,15 +16,6 @@ func WorktreeAdd(host, repo, name, wtDir string) error {
 	}
 	logCmd(host, repo, out, args...)
 
-	// Determine the root branch (what the repo root has checked out)
-	rootBranch, err := runGit(host, repo, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return fmt.Errorf("cannot determine root branch: %w", err)
-	}
-	// Set upstream so diff/ls know what to compare against
-	if _, err := runGit(host, repo, "branch", "--set-upstream-to", "origin/"+rootBranch, name); err != nil {
-		return fmt.Errorf("cannot set upstream for %s: %w", name, err)
-	}
 	return nil
 }
 

@@ -8,13 +8,9 @@ import (
 )
 
 // DiffStat returns a --stat summary of changes on this branch vs the merge-base
-// with its upstream tracking ref. Returns "" if there are no changes.
-func DiffStat(host, dir string) (string, error) {
-	branch, err := runGit(host, dir, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("cannot determine branch: %w", err)
-	}
-	upstream, err := UpstreamRef(host, dir, branch)
+// with the root branch's upstream ref. Returns "" if there are no changes.
+func DiffStat(host, dir, repo string) (string, error) {
+	upstream, err := UpstreamRef(host, repo)
 	if err != nil {
 		return "", err
 	}
@@ -34,13 +30,9 @@ func DiffStat(host, dir string) (string, error) {
 }
 
 // Diff returns the full diff of changes on this branch vs the merge-base
-// with its upstream tracking ref. If color is true, ANSI color codes are included.
-func Diff(host, dir string, color bool) (string, error) {
-	branch, err := runGit(host, dir, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("cannot determine branch: %w", err)
-	}
-	upstream, err := UpstreamRef(host, dir, branch)
+// with the root branch's upstream ref. If color is true, ANSI color codes are included.
+func Diff(host, dir, repo string, color bool) (string, error) {
+	upstream, err := UpstreamRef(host, repo)
 	if err != nil {
 		return "", err
 	}

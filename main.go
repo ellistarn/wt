@@ -249,7 +249,7 @@ func cmdDiff(args []string) {
 		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
 	}
 
-	stat, err := git.DiffStat(host, entry.Dir)
+	stat, err := git.DiffStat(host, entry.Dir, entry.Repo)
 	if err != nil {
 		die("diff: %v", err)
 	}
@@ -260,7 +260,7 @@ func cmdDiff(args []string) {
 	fmt.Println(stat)
 
 	isTTY := isTerminal()
-	full, err := git.Diff(host, entry.Dir, isTTY)
+	full, err := git.Diff(host, entry.Dir, entry.Repo, isTTY)
 	if err != nil {
 		die("diff: %v", err)
 	}

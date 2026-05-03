@@ -36,15 +36,20 @@ func RepoRoot(host string, dir ...string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// UpstreamRef returns the upstream tracking ref for the given branch
-// (e.g., "origin/krocodile"). Returns an error if no upstream is configured.
-// Works from any directory in the repo (worktree or root).
-func UpstreamRef(host, dir, branch string) (string, error) {
-	out, err := runGit(host, dir, "for-each-ref", "--format=%(upstream:short)", "refs/heads/"+branch)
-	if err != nil || out == "" {
-		return "", fmt.Errorf("no upstream configured for branch %q\n\nSet it with: git branch --set-upstream-to=origin/<base> %s", branch, branch)
+// UpstreamRef returns the comparison target for worktree branches — always
+// origin/<rootBranch>, where rootBranch is whatever the repo root has checked
+// out (typically "main"). This is independent of any branch's git tracking
+// config, which may be overwritten by git push -u to point at the branch's
+// own remote ref.
+func UpstreamRef(host, repo string) (string, error) {
+	rootBranch, err := runGit(host, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("cannot determine root branch in %s: %w", repo, err)
 	}
-	return out, nil
+	if rootBranch == "" || rootBranch == "HEAD" {
+		return "", fmt.Errorf("cannot determine root branch in %s (detached HEAD?)", repo)
+	}
+	return "origin/" + rootBranch, nil
 }
 
 // runGit runs a git command in the given directory. If host is empty, runs locally.
