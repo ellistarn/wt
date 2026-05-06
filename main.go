@@ -73,42 +73,47 @@ func cmdLocal(args []string, root string) {
 	if err := opencode.EnsureLocalServer(); err != nil {
 		die("%v", err)
 	}
-	serverURL := opencode.LocalServerURL()
-
 	if len(args) == 0 {
-		// Create new local worktree
-		repo, err := git.RepoRoot("")
-		if err != nil {
-			die("not in a git repo")
-		}
-		name := worktree.GenerateName(filepath.Base(repo))
-		if root == "" {
-			root = worktree.DefaultRoot
-		}
-		wtDir := worktree.WorktreeDir(repo, root, name)
-		if err := git.Pull("", repo); err != nil {
-			die("failed to pull: %v", err)
-		}
-		if err := git.WorktreeAdd("", repo, name, wtDir); err != nil {
-			die("failed to create worktree: %v", err)
-		}
-		if err := attach(serverURL, wtDir, ""); err != nil {
-			die("%v", err)
-		}
-		if err := git.Pull("", repo); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
-		}
-		printExitRow(serverURL, worktree.Entry{
-			Name:      name,
-			Dir:       wtDir,
-			Repo:      repo,
-			CreatedAt: time.Now(),
-		})
-		return
+		cmdLocalCreate(root)
+	} else {
+		cmdLocalResume(args[0])
 	}
+}
 
-	// Attach by name — search local and remote
-	name := args[0]
+// cmdLocalCreate creates a new worktree from the current HEAD and attaches.
+func cmdLocalCreate(root string) {
+	serverURL := opencode.LocalServerURL()
+	repo, err := git.RepoRoot("")
+	if err != nil {
+		die("not in a git repo")
+	}
+	name := worktree.GenerateName(filepath.Base(repo))
+	if root == "" {
+		root = worktree.DefaultRoot
+	}
+	wtDir := worktree.WorktreeDir(repo, root, name)
+	if err := git.Pull("", repo); err != nil {
+		die("failed to pull: %v", err)
+	}
+	if err := git.WorktreeAdd("", repo, name, wtDir); err != nil {
+		die("failed to create worktree: %v", err)
+	}
+	if err := attach(serverURL, wtDir, ""); err != nil {
+		die("%v", err)
+	}
+	if err := git.Pull("", repo); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+	}
+	printExitRow(serverURL, worktree.Entry{
+		Name:      name,
+		Dir:       wtDir,
+		Repo:      repo,
+		CreatedAt: time.Now(),
+	})
+}
+
+// cmdLocalResume finds an existing worktree by name and attaches to it.
+func cmdLocalResume(name string) {
 	entry, ok := findWorktree(name)
 	if !ok {
 		die("worktree %q not found", name)
@@ -122,6 +127,7 @@ func cmdLocal(args []string, root string) {
 	}
 
 	if entry.Host == "" {
+		serverURL := opencode.LocalServerURL()
 		sessionID := opencode.FindLatestSession(serverURL, entry.Dir)
 		if err := attach(serverURL, entry.Dir, sessionID); err != nil {
 			die("%v", err)
