@@ -251,12 +251,12 @@ Git state is determined per worktree (parallel, bounded to 8 concurrent) by
 checking the working tree and branch against `origin/<root-branch>`.
 
 ```
-WORKTREE            STATUS       TITLE                           REPO                              TOKENS  ACTIVITY  AGE
-a3f8c12     attached     Fix auth handler validation      [remote] /home/user/.../acme/api   150k    now       3h
-b7e2a09     committed    Refactor config parser           /Users/user/.../acme/api           42k     5m        1d
-c9a1f57     working      Migrate database schema          [remote] /home/user/.../acme/api   12k     now       2h
-d5b8e24     merged *     Add retry logic                  /Users/user/.../acme/api           80k     1h        2d
-e1d4b83     empty *      -                                [remote] /home/user/.../acme/web   -       -         2d
+WORKTREE    STATUS       TITLE                           URI                                     TOKENS  ACTIVITY  AGE
+a3f8c12     attached     Fix auth handler validation      dev-desktop:5096/~/.../acme/api         150k    now       3h
+b7e2a09     committed    Refactor config parser           localhost:5096/~/.../acme/api            42k     5m        1d
+c9a1f57     working      Migrate database schema          dev-desktop:5096/~/.../acme/api          12k     now       2h
+d5b8e24     merged *     Add retry logic                  localhost:5096/~/.../acme/api            80k     1h        2d
+e1d4b83     empty *      -                                dev-desktop:5096/~/.../acme/web          -       -         2d
 ```
 
 Columns:
@@ -268,7 +268,7 @@ Columns:
 | TITLE | Session title, auto-generated from the first prompt. `-` if no session. |
 | ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). `-` if no session. |
 | TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. `-` if no session. |
-| REPO | Repo root, shortened to `<home>/.../parent/name`. `[remote]` prefix for remote worktrees. |
+| URI | OpenCode server and repo path, formatted as `host:port/path`. Path is shortened to `~/.../parent/name` when deep. Local worktrees show `localhost`; remote worktrees show the remote hostname. |
 | AGE | When the worktree was created. |
 
 Status values, in priority order (highest wins). Statuses marked `*` are
@@ -294,8 +294,7 @@ behind the target (behind-target check). Session lifecycle states (`empty`,
 unique commits. A worktree with no session is `empty` regardless of the branch's
 position relative to the target — it never had work to merge. A worktree with a
 session whose branch is behind the target is `merged` — the work landed via a
-merge that made the branch's commits reachable from the target. Attachment is
-detected by scanning local `opencode attach` processes.
+merge that made the branch's commits reachable from the target. Attachment is detected by scanning local `opencode attach` processes. Orphaned attach processes (ppid == 1, reparented to init/launchd after the parent `wt` process died) are killed and excluded — this prevents phantom "attached" status on dead sessions.
 
 ## Reconnection
 
