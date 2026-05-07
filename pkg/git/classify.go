@@ -10,11 +10,7 @@ import (
 	"github.com/ellistarn/wt/pkg/ssh"
 )
 
-// IsClean returns true if the worktree has no modified, staged, or untracked files.
-func IsClean(host, dir string) bool {
-	out, err := runGit(host, dir, "status", "--porcelain")
-	return err == nil && out == ""
-}
+
 
 // UniqueCommitCount returns the number of commits on branch that are not on
 // its upstream tracking ref. Returns 0 if the branch has not diverged or has
@@ -179,15 +175,21 @@ type ClassifyEntry struct {
 
 // ClassifyResult holds the git classification for a single worktree.
 type ClassifyResult struct {
-	Clean  bool // no modified, staged, or untracked files
-	Unique int  // commits on branch not on its upstream
-	Merged bool // branch changes incorporated into its upstream
-	Behind bool // branch is a proper ancestor of its upstream (rebase merge)
+	HasDiff bool // visible changes: tracked modifications vs merge-base OR untracked files
+	Unique  int  // commits on branch not on its upstream
+	Merged  bool // branch changes incorporated into its upstream
+	Behind  bool // branch is a proper ancestor of its upstream (rebase merge)
+	HasUncommitted bool // uncommitted changes (tracked diff vs HEAD or untracked files)
 }
 
 // ClassifyBatch classifies multiple remote worktrees in a single SSH call.
-// Replicates the logic of IsClean + UniqueCommitCount + IsMerged but runs
-// all git commands on the remote host in one round-trip.
+// Computes HasDiff (merge-base diff + untracked), UniqueCommitCount, IsMerged,
+// IsBehindUpstream, and HasUncommitted in one round-trip.
+//
+// SYNC: The shell script mirrors the logic of HasDiff, HasUncommittedChanges,
+// UniqueCommitCount, IsMerged, and IsBehindUpstream. Changes to any of those
+// functions must be reflected here.
+//
 // Returns an error if the SSH call fails entirely.
 func ClassifyBatch(host string, entries []ClassifyEntry) ([]ClassifyResult, error) {
 	if len(entries) == 0 {
@@ -206,27 +208,44 @@ set -eu
 while IFS=$'\t' read -r dir repo branch; do
     [ -z "$dir" ] && continue
 
-    # IsClean
-    status=$(git -C "$dir" status --porcelain 2>/dev/null) || status=""
-    if [ -n "$status" ]; then
-        clean=false
-    else
-        clean=true
+    # Derive upstream from repo root branch (same as local UpstreamRef).
+    root_branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null) || root_branch=""
+    upstream=""
+    if [ -n "$root_branch" ] && [ "$root_branch" != "HEAD" ]; then
+        upstream="origin/$root_branch"
+    fi
+
+    # HasDiff: merge-base diff + untracked files
+    has_diff=false
+    if [ -n "$upstream" ]; then
+        mb=$(git -C "$dir" merge-base "$upstream" HEAD 2>/dev/null) || mb=""
+        if [ -n "$mb" ]; then
+            git -C "$dir" diff --quiet "$mb" 2>/dev/null || has_diff=true
+        fi
+    fi
+    if [ "$has_diff" = "false" ]; then
+        untracked=$(git -C "$dir" ls-files --others --exclude-standard 2>/dev/null | head -1)
+        [ -n "$untracked" ] && has_diff=true
+    fi
+
+    # HasUncommitted: diff vs HEAD + untracked files
+    has_uncommitted=false
+    git -C "$dir" diff --quiet HEAD 2>/dev/null || has_uncommitted=true
+    if [ "$has_uncommitted" = "false" ]; then
+        untracked=$(git -C "$dir" ls-files --others --exclude-standard 2>/dev/null | head -1)
+        [ -n "$untracked" ] && has_uncommitted=true
     fi
 
     # Detached worktrees have no branch — skip all ref-dependent logic.
     if [ -z "$branch" ]; then
-        printf '%s\t%s\t%s\t%s\n' "$clean" "0" "false" "false"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$has_diff" "0" "false" "false" "$has_uncommitted"
         continue
     fi
 
-    # Derive upstream from repo root branch (same as local UpstreamRef).
-    root_branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    if [ -z "$root_branch" ] || [ "$root_branch" = "HEAD" ]; then
-        printf '%s\t%s\t%s\t%s\n' "$clean" "0" "false" "false"
+    if [ -z "$upstream" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$has_diff" "0" "false" "false" "$has_uncommitted"
         continue
     fi
-    upstream="origin/$root_branch"
 
     # UniqueCommitCount
     unique=$(git -C "$repo" rev-list --count "$upstream..$branch" 2>/dev/null) || unique=0
@@ -270,7 +289,7 @@ while IFS=$'\t' read -r dir repo branch; do
         fi
     fi
 
-    printf '%s\t%s\t%s\t%s\n' "$clean" "$unique" "$merged" "$behind"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$has_diff" "$unique" "$merged" "$behind" "$has_uncommitted"
 done << 'ENTRIES'
 ` + heredoc.String() + `ENTRIES
 `
@@ -285,15 +304,18 @@ done << 'ENTRIES'
 		if i >= len(entries) {
 			break
 		}
-		parts := strings.SplitN(line, "\t", 4)
+		parts := strings.SplitN(line, "\t", 5)
 		if len(parts) < 3 {
 			continue
 		}
-		results[i].Clean = parts[0] == "true"
+		results[i].HasDiff = parts[0] == "true"
 		results[i].Unique, _ = strconv.Atoi(parts[1])
 		results[i].Merged = parts[2] == "true"
 		if len(parts) >= 4 {
 			results[i].Behind = parts[3] == "true"
+		}
+		if len(parts) >= 5 {
+			results[i].HasUncommitted = parts[4] == "true"
 		}
 	}
 	return results, nil

@@ -654,6 +654,41 @@ func TestLs_UnifiedStatus(t *testing.T) {
 	assertContains(t, out, "committed")
 }
 
+// TestLs_MergedButDirty verifies that a squash-merged branch with new
+// uncommitted changes after the merge is classified as "dirty" (not "merged").
+// This is a data-loss protection: "merged" worktrees are auto-removable, so
+// new uncommitted work must override the merged classification.
+func TestLs_MergedButDirty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Create branch, commit, push, squash-merge into main
+	wt := env.addWorktree("merged-dirty")
+	env.commitFile(wt, "feature.txt", "done", "feature")
+	env.push("merged-dirty")
+	env.createIdleSession(wt)
+	env.squashMergeToMain("merged-dirty")
+	gitCmd(t, env.repo, "checkout", "main")
+
+	// Now add new uncommitted work in the worktree AFTER the merge
+	os.WriteFile(filepath.Join(wt, "new-work.txt"), []byte("new stuff"), 0644)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	// Must be "dirty" not "merged" — protects from auto-removal
+	if !strings.Contains(out, "merged-dirty") {
+		t.Fatal("worktree should appear in ls output")
+	}
+	if strings.Contains(out, "merged") && !strings.Contains(out, "dirty") {
+		t.Error("worktree with uncommitted changes after merge should be 'dirty', not 'merged'")
+	}
+	assertContains(t, out, "dirty")
+}
+
 // TestLs_RegressionPushDashU reproduces the bug where `git push -u` overwrites
 // the branch's tracking config from origin/main to origin/<branch>. After the
 // PR merges and the remote branch is deleted (prune), the stale tracking ref
@@ -1035,6 +1070,50 @@ func TestDiff_NoChanges(t *testing.T) {
 	t.Log("output:\n" + out)
 
 	assertContains(t, out, "No changes on this branch.")
+}
+
+// TestDiff_UntrackedFiles verifies that wt diff includes untracked files.
+// Previously, untracked files caused "dirty" status but produced an empty diff.
+func TestDiff_UntrackedFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("diff-untracked")
+	os.WriteFile(filepath.Join(wt, "new-file.txt"), []byte("untracked content"), 0644)
+
+	out := env.wt("diff", "diff-untracked")
+	t.Log("output:\n" + out)
+
+	// Untracked file should appear in the diff output
+	assertContains(t, out, "new-file.txt")
+	assertContains(t, out, "untracked content")
+}
+
+// TestLs_DirtyFromUntracked verifies that a worktree with only untracked files
+// is classified as "dirty" and the diff is non-empty. This is the invariant:
+// dirty status implies a visible diff.
+func TestLs_DirtyFromUntracked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("untracked-dirty")
+	os.WriteFile(filepath.Join(wt, "new.txt"), []byte("x"), 0644)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "untracked-dirty")
+	assertContains(t, out, "dirty")
+
+	// Diff must also be non-empty (the original bug: dirty but empty diff)
+	diffOut := env.wt("diff", "untracked-dirty")
+	assertContains(t, diffOut, "new.txt")
 }
 
 func TestDiff_NotFound(t *testing.T) {
