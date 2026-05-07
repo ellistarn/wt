@@ -215,7 +215,8 @@ is not touched.
 Show the changes on a worktree's branch. Pulls the repo's current branch
 (best-effort) so the diff is computed against the latest remote state. Computes
 the merge-base between `origin/<root-branch>` and HEAD, then diffs against it,
-capturing both committed and uncommitted changes.
+capturing both committed and uncommitted changes. Untracked files are included
+as new-file diffs.
 
 Output: `--stat` summary printed directly (stays in scrollback), then the full
 diff piped through `less -R` when stdout is a terminal. When piped (e.g., to an
@@ -278,7 +279,7 @@ removed by `wt rm`.
 |--------|---------|
 | `attached` | TUI client connected |
 | `working` | Agent streaming (last assistant message incomplete) |
-| `dirty` | Uncommitted changes in working tree |
+| `dirty` | Visible changes in diff not accounted for by unmerged commits |
 | `merged *` | Changes incorporated into `origin/<root-branch>` |
 | `committed` | Unique commits not yet in `origin/<root-branch>` |
 | `empty *` | No session was ever created |
@@ -287,14 +288,17 @@ removed by `wt rm`.
 
 Session states (`attached`, `working`) take priority — the worktree is in active
 use. Git states (`dirty`, `merged`, `committed`) take priority next — they
-describe the safety of the work. `merged` covers both detection paths: unique
-commits detected as landed (three-phase), and zero unique commits with the branch
-behind the target (behind-target check). Session lifecycle states (`empty`,
-`stale`, `idle`) apply when the working tree is clean and the branch has no
-unique commits. A worktree with no session is `empty` regardless of the branch's
-position relative to the target — it never had work to merge. A worktree with a
-session whose branch is behind the target is `merged` — the work landed via a
-merge that made the branch's commits reachable from the target. Attachment is detected by scanning local `opencode attach` processes. Orphaned attach processes (ppid == 1, reparented to init/launchd after the parent `wt` process died) are killed and excluded — this prevents phantom "attached" status on dead sessions.
+describe the safety of the work. The diff (merge-base comparison + untracked
+files) is the single gate: if the diff is empty, the worktree cannot be dirty.
+If the diff is non-empty with no unique commits, the changes must be uncommitted
+→ dirty. `merged` covers both detection paths: unique commits detected as landed
+(three-phase), and zero unique commits with the branch behind the target
+(behind-target check). Session lifecycle states (`empty`, `stale`, `idle`) apply
+when the diff is empty and the branch has no unique commits. A worktree with no
+session is `empty` regardless of the branch's position relative to the target —
+it never had work to merge. A worktree with a session whose branch is behind the
+target is `merged` — the work landed via a merge that made the branch's commits
+reachable from the target. Attachment is detected by scanning local `opencode attach` processes. Orphaned attach processes (ppid == 1, reparented to init/launchd after the parent `wt` process died) are killed and excluded — this prevents phantom "attached" status on dead sessions.
 
 ## Reconnection
 
