@@ -226,7 +226,8 @@ LLM or file), the full diff is printed directly with no color and no pager.
 
 List all worktrees with their status. Local worktrees (all repos under `$HOME`)
 and remote worktrees (all repos on the dev desktop) are discovered concurrently
-and merged into a single table sorted by most recent activity.
+and merged into a single table sorted by most recent activity, with removable
+entries (`*`) pushed to the bottom.
 
 Session metadata is fetched from the OpenCode server API, not from the database
 directly. For each server (local and remote), per worktree (parallel, bounded to

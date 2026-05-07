@@ -3,6 +3,7 @@ package display
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -23,6 +24,32 @@ var removableStatuses = map[string]bool{
 	"merged": true,
 	"stale":  true,
 	"empty":  true,
+}
+
+// SortRows sorts rows for display: removable statuses (*) sink to the bottom,
+// everything else sorts by most recent activity (UpdatedAt), newest first.
+func SortRows(rows []Row) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		ri, rj := removableStatuses[rows[i].Status], removableStatuses[rows[j].Status]
+		if ri != rj {
+			return rj // removable entries sink to bottom
+		}
+		ai, aj := rows[i].Entry.UpdatedAt, rows[j].Entry.UpdatedAt
+		if !ai.IsZero() && !aj.IsZero() {
+			return ai.After(aj)
+		}
+		if !ai.IsZero() {
+			return true
+		}
+		if !aj.IsZero() {
+			return false
+		}
+		ci, cj := rows[i].Entry.CreatedAt, rows[j].Entry.CreatedAt
+		if !ci.IsZero() && !cj.IsZero() {
+			return ci.After(cj)
+		}
+		return rows[i].Entry.Name < rows[j].Entry.Name
+	})
 }
 
 // PrintTable prints rows as an aligned table. Removable statuses get a * suffix.

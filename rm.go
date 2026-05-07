@@ -254,12 +254,12 @@ type rmResult struct {
 	errMsg string
 }
 
-// sortRmResults sorts removed entries first, then by most recent activity.
+// sortRmResults sorts removed entries to the bottom, then by most recent activity.
 func sortRmResults(results []rmResult) {
 	sort.SliceStable(results, func(i, j int) bool {
 		ri, rj := results[i].status == "removed", results[j].status == "removed"
 		if ri != rj {
-			return ri
+			return rj // removed entries sink to bottom
 		}
 		ti, tj := results[i].entry.UpdatedAt, results[j].entry.UpdatedAt
 		if !ti.IsZero() && !tj.IsZero() {

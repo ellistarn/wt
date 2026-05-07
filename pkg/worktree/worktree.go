@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"path"
-	"sort"
 	"time"
 )
 
@@ -45,31 +44,6 @@ func GenerateName(project string) string {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	return project + "-" + hex.EncodeToString(b[:])[:7]
-}
-
-// Sort sorts entries by most recent activity (UpdatedAt), newest first.
-// Entries without activity sort to the end, ordered by CreatedAt newest first.
-func Sort(entries []Entry) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		ai := entries[i].UpdatedAt
-		aj := entries[j].UpdatedAt
-		// Both have activity — sort by most recent
-		if !ai.IsZero() && !aj.IsZero() {
-			return ai.After(aj)
-		}
-		// Only one has activity — it wins
-		if !ai.IsZero() {
-			return true
-		}
-		if !aj.IsZero() {
-			return false
-		}
-		// Neither has activity — sort by creation time
-		if !entries[i].CreatedAt.IsZero() && !entries[j].CreatedAt.IsZero() {
-			return entries[i].CreatedAt.After(entries[j].CreatedAt)
-		}
-		return entries[i].Name < entries[j].Name
-	})
 }
 
 // TimeUnix converts a unix timestamp to time.Time.
