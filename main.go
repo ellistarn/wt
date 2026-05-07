@@ -220,7 +220,6 @@ func cmdLs() {
 	if enrichErr != nil {
 		die("%v", enrichErr)
 	}
-	worktree.Sort(all)
 
 	if len(all) == 0 {
 		fmt.Println("No worktrees found.")
@@ -236,6 +235,7 @@ func cmdLs() {
 			Status: statuses[i],
 		}
 	}
+	display.SortRows(rows)
 	display.PrintTable(rows, opencode.ServerPort())
 }
 
