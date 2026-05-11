@@ -1,16 +1,15 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/ellistarn/wt/pkg/discover"
 	"github.com/ellistarn/wt/pkg/git"
-	"github.com/ellistarn/wt/pkg/opencode"
-	"github.com/ellistarn/wt/pkg/ssh"
+	"github.com/ellistarn/wt/pkg/tmux"
+	"github.com/ellistarn/wt/pkg/transport"
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
@@ -43,9 +42,6 @@ func findWorktree(name string) (worktree.Entry, bool) {
 	}
 
 	all := append(local, rr.entries...)
-	// Exact match first, then suffix match so users can type just the
-	// hash portion of a project-scoped name (e.g. "799291a" matches
-	// "Jetstream-799291a").
 	for _, e := range all {
 		if e.Name == name {
 			return e, true
@@ -60,12 +56,9 @@ func findWorktree(name string) (worktree.Entry, bool) {
 	return worktree.Entry{}, false
 }
 
-// discoverAll discovers worktrees and enriches them with session data.
-// Git pull runs concurrently with enrichment; per-repo done channels are
-// returned so callers can gate classification on each repo's pull completing.
-// Returns any enrichment error — callers that make safety decisions must
-// check this; callers that only display can ignore it.
-func discoverAll(pull bool) ([]worktree.Entry, pullResult, error) {
+// discoverAll discovers worktrees, enriches them with tmux session data,
+// and starts pulls for each unique repo. Returns entries and pull handles.
+func discoverAll(pull bool) ([]worktree.Entry, pullResult) {
 	host := os.Getenv("WT_REMOTE_HOST")
 
 	localCh := make(chan []worktree.Entry, 1)
@@ -82,7 +75,6 @@ func discoverAll(pull bool) ([]worktree.Entry, pullResult, error) {
 		remoteCh <- remoteResult{}
 	}
 
-	// Discover in parallel, then pull and enrich.
 	local := <-localCh
 	rr := <-remoteCh
 	if rr.err != nil {
@@ -91,17 +83,19 @@ func discoverAll(pull bool) ([]worktree.Entry, pullResult, error) {
 
 	all := append(local, rr.entries...)
 
-	// Enrich using sub-slices of all so in-place mutations are visible
-	// in the returned slice.
+	// Enrich with tmux session data
 	localEntries := all[:len(local)]
 	remoteEntries := all[len(local):]
 
-	// Run git pull and session enrichment concurrently. Pull is non-blocking —
-	// per-repo done channels are returned for callers to wait on per-entry,
-	// overlapping pull with classification instead of serializing them.
-	var wg sync.WaitGroup
-	var localErr, remoteErr error
+	localT := transport.NewLocal()
+	enrichEntries(localEntries, localT)
 
+	if host != "" && rr.err == nil {
+		remoteT := transport.NewSSH(host)
+		enrichEntries(remoteEntries, remoteT)
+	}
+
+	// Start pulls
 	var pulled pullResult
 	if pull {
 		pulled = startPullRepos(all)
@@ -109,61 +103,62 @@ func discoverAll(pull bool) ([]worktree.Entry, pullResult, error) {
 		pulled = make(pullResult)
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := opencode.EnsureLocalServer(); err != nil {
-			localErr = fmt.Errorf("local server: %w", err)
-		} else if err := opencode.Enrich(opencode.LocalServerURL(), localEntries); err != nil {
-			localErr = fmt.Errorf("local session query: %w", err)
-		}
-	}()
-
-	if host != "" && rr.err == nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := ssh.EnsureTunnel(host, opencode.TunnelPort(), opencode.ServerPort()); err != nil {
-				remoteErr = fmt.Errorf("SSH tunnel: %w", err)
-			} else if err := opencode.EnsureRemoteServer(host); err != nil {
-				remoteErr = fmt.Errorf("remote server: %w", err)
-			} else if err := opencode.Enrich(opencode.RemoteServerURL(), remoteEntries); err != nil {
-				remoteErr = fmt.Errorf("remote session query: %w", err)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	return all, pulled, errors.Join(localErr, remoteErr)
+	return all, pulled
 }
 
-// hostFor returns the SSH host for an entry, or "" for local entries.
-func hostFor(e worktree.Entry) string {
-	return e.Host
+// enrichEntries enriches worktree entries with tmux session data (attached, working, title, activity).
+func enrichEntries(entries []worktree.Entry, t transport.Transport) {
+	sessions := tmux.ListSessions(t)
+	sessionSet := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		sessionSet[s] = true
+	}
+
+	attached := tmux.AttachedSessions(t)
+
+	for i := range entries {
+		sess := tmux.SessionName(entries[i].Name)
+		if !sessionSet[sess] {
+			continue
+		}
+
+		entries[i].Attached = attached[sess]
+		entries[i].Title = tmux.PaneTitle(t, sess)
+
+		activity := tmux.WindowActivity(t, sess)
+		if !activity.IsZero() {
+			entries[i].UpdatedAt = activity
+		}
+
+		if !activity.IsZero() && time.Since(activity) < tmux.ActivityThreshold {
+			entries[i].Status = "working"
+		} else {
+			entries[i].Status = "idle"
+		}
+
+		if entries[i].Status == "idle" && !entries[i].UpdatedAt.IsZero() &&
+			time.Since(entries[i].UpdatedAt) > worktree.StaleThreshold {
+			entries[i].Status = "stale"
+		}
+	}
 }
 
 // pullResult holds per-repo done channels from a non-blocking pull.
-// Wait blocks until the given entry's repo has been pulled.
 type pullResult map[repoKey]<-chan struct{}
 
 func (f pullResult) Wait(e worktree.Entry) {
-	if ch, ok := f[repoKey{hostFor(e), e.Repo}]; ok {
+	if ch, ok := f[repoKey{e.Host, e.Repo}]; ok {
 		<-ch
 	}
 }
 
 type repoKey struct{ host, repo string }
 
-// startPullRepos kicks off git pull for each unique repo and returns
-// immediately. Each repo gets its own goroutine; the returned channels
-// close when each repo's pull completes. Warnings are printed to stderr
-// for any repos that fail to pull.
 func startPullRepos(entries []worktree.Entry) pullResult {
 	seen := make(map[repoKey]bool)
 	result := make(pullResult)
 	for _, e := range entries {
-		k := repoKey{hostFor(e), e.Repo}
+		k := repoKey{e.Host, e.Repo}
 		if seen[k] {
 			continue
 		}
@@ -179,4 +174,3 @@ func startPullRepos(entries []worktree.Entry) pullResult {
 	}
 	return result
 }
-

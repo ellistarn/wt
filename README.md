@@ -1,58 +1,60 @@
 # wt
 
-Worktree session manager for [OpenCode](https://opencode.ai). When multiple AI
-agents work on the same repo, they need isolation — separate files, separate
-branches, separate git state. `wt` gives each agent its own git worktree on its
-own branch, bound to a persistent OpenCode session, and manages the full
-lifecycle: create, list, attach, diff, clean up. Works locally and remotely via
-SSH.
+Worktree session manager. When multiple AI agents work on the same repo, they
+need isolation — separate files, separate branches, separate git state. `wt`
+gives each agent its own git worktree on its own branch, bound to a persistent
+tmux session, and manages the full lifecycle: create, list, attach, diff, clean
+up. Works locally and remotely via SSH.
 
 ```
 $ wt ls
-WORKTREE  STATUS     TITLE                                URI                                     TOKENS  ACTIVITY  AGE
-a3f8c12   attached   Rewrite Linux scheduler in Rust      localhost:5096/~/.../torvalds/linux     380k    now       3h
-b7e2a09   working    Implement quantum-safe cryptography  dev-desktop:5096/~/.../satoshi/bitcoin  240k    now       3d
-e4f2a81   dirty      Finish The Winds of Winter           localhost:5096/~/.../grrm/asoiaf       180k    5m        15y
-f2c7d91   idle       Write worktree session manager       localhost:5096/~/.../ellistarn/wt       150k    5m        4d
-e1d4b83   committed  Autonomous drone delivery            localhost:5096/~/.../bezos/prime-air    85k     2h        12y
-c9a1f57   merged *   Add exceptions to Go                 localhost:5096/~/.../robpike/go         45k     6h        1d
-d5b8e24   idle       Actually open OpenAI                 dev-desktop:5096/~/.../altman/openai    120k    10y       10y
-7f3b1c8   stale *    Ship Half-Life 3                     localhost:5096/~/.../gaben/hl3          30k     18y       18y
+WORKTREE  STATUS     TITLE                            URI                                 ACTIVITY  AGE
+a3f8c12   attached   Rewrite Linux scheduler in Rust  localhost:~/.../torvalds/linux       now       3h
+b7e2a09   working    Quantum-safe cryptography        dev-desktop:~/.../satoshi/bitcoin    now       3d
+e4f2a81   dirty      Finish The Winds of Winter       localhost:~/.../grrm/asoiaf          5m        15y
+f2c7d91   idle       Write worktree session manager   localhost:~/.../ellistarn/wt          5m        4d
+e1d4b83   committed  Autonomous drone delivery        localhost:~/.../bezos/prime-air       2h        12y
+c9a1f57   merged *   Add exceptions to Go             localhost:~/.../robpike/go            6h        1d
+d5b8e24   stale *    Actually open OpenAI             dev-desktop:~/.../altman/openai       10y       10y
+7f3b1c8   empty *    -                                localhost:~/.../gaben/hl3             -         18y
 ```
 
 Statuses, highest priority wins:
 
-- **attached** — TUI client connected
-- **working** — agent generating
+- **attached** — tmux client connected
+- **working** — window received output in last 5 seconds
 - **dirty** — uncommitted changes in working tree
 - **merged** \* — changes incorporated into upstream
 - **committed** — unique commits not yet in upstream
 - **idle** — session exists, no unique commits
 - **stale** \* — session inactive >4h, no unique commits
-- **empty** \* — no session was ever created
+- **empty** \* — no tmux session exists
 
 ## Install
 
 ```
-go install github.com/ellistarn/wt@latest  # requires Go 1.24+, Git 2.38+
+go install github.com/ellistarn/wt@latest
 ```
 
-Set `WT_REMOTE_HOST` for remote operations, `WT_OPENCODE_PORT` to override the
-default port (5096).
+Requires Go 1.24+, Git 2.38+, tmux 1.9+.
+
+Set `WT_REMOTE_HOST` for remote discovery in `wt ls`.
 
 ## Commands
 
 ```
-wt                        Create a new local worktree and attach
-wt <name>                 Attach to an existing worktree (local or remote)
-wt -r <path>              Create a new remote worktree and attach
-wt ls                     List all worktrees (local and remote)
-wt diff <name>            Show changes on a worktree's branch
-wt rm                     Remove worktrees marked * (merged/stale/empty)
-wt rm <name>              Remove a specific worktree unconditionally
+wt .                        Create a new worktree in cwd repo, open shell
+wt . <cmd>                  Create a new worktree in cwd repo, run cmd
+wt <path> [cmd]             Create a new worktree in repo at path
+wt <host>:<path> [cmd]      Create a new worktree on remote host
+wt <host>                   Create a new worktree on remote host (~ default)
+wt <name>                   Attach to an existing worktree
+wt ls                       List all worktrees (local and remote)
+wt diff <name>              Show changes on a worktree's branch
+wt rm                       Remove worktrees marked * (merged/stale/empty)
+wt rm <name>                Remove a specific worktree unconditionally
 
 Flags:
-  -r, --remote              Operate on the remote dev desktop
   --root <dir>              Directory for new worktrees, relative to repo root
                               (default: .. — sibling to the repo)
                               Example: --root .worktrees
@@ -61,26 +63,31 @@ Flags:
 
 ## How it works
 
-`wt` glues together Git, OpenCode, and SSH.
+`wt` glues together Git, tmux, and SSH.
 
 **Git** — Every command pulls the repo root (`git pull --ff-only --prune`).
 Create adds a worktree at `<root>/<name>` (default root `..`, placing it as a
-sibling directory) on a new branch with `origin/<root-branch>` as its upstream,
-so worktrees always start from the latest remote state and merge detection stays
-accurate against a fresh upstream. Use `--root .worktrees` when the repo is
-`$HOME` and the parent directory is not writable.
-Remove deletes the worktree directory and force-deletes the branch.
+sibling directory) on a new branch. Use `--root .worktrees` when the repo is
+`$HOME` and the parent directory is not writable. Remove deletes the worktree
+directory and force-deletes the branch.
 
-**OpenCode** — `wt` auto-starts `opencode serve` on port 5096 as a detached
-process on first use, locally and on the remote host via SSH. One server per
-machine, shared across all worktrees and repos. If OpenCode is already running
-on a different port, set `WT_OPENCODE_PORT` to match. Sessions persist in the
-OpenCode database — `wt rm` deletes the worktree and branch but never touches
-session history. Reattach with `wt <name>`; the TUI reconnects and loads full
-history, including work the agent completed while disconnected.
+**tmux** — Each worktree gets a tmux session named `wt/<name>`. The session
+starts a shell in the worktree directory; any command passed to `wt` runs inside
+it. Sessions persist across disconnects — detach with `Ctrl+B, d` and reattach
+with `wt <name>`. Working detection uses `window_activity`; title uses
+`pane_title` (processes set it via the `\033]0;title\007` escape sequence).
 
-**SSH** — For remote operations, `wt` maintains a long-lived SSH tunnel (port
-5097 to remote 5096) with a mux control socket for connection reuse. Health-checked
-and restarted automatically. All remote git and server operations go through the
-mux, amortizing SSH handshake costs.
+**SSH** — Remote paths use `host:path` syntax (e.g., `wt dev:~/src/api`). tmux
+commands run over SSH with a ControlPath mux socket for connection reuse.
+Attach runs `ssh -t <host> tmux attach-session -t <session>`, giving the remote
+tmux session direct terminal access.
 
+## Session cleanup
+
+`wt rm` kills the tmux session before removing the worktree. `wt rm` (batch)
+cleans up all worktrees in `merged`, `stale`, or `empty` state — including
+their tmux sessions.
+
+Orphaned tmux sessions (worktree removed outside `wt`) are cleaned up during
+`wt rm` batch: any tmux session whose name matches no discovered worktree is
+killed.

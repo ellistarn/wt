@@ -1,18 +1,13 @@
 package e2e_test
 
 import (
-	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -44,26 +39,22 @@ func mustCwd() string {
 	return d
 }
 
-type testEnv struct {
-	t          *testing.T
-	rootDir    string
-	dataDir    string
-	repo       string
-	mockURL    string
-	mockPort   string
-	sessions   []mockSession
-	sessionMu  sync.Mutex
+// mockTmuxSession represents a tmux session in the mock.
+type mockTmuxSession struct {
+	name      string
+	dir       string
+	hasClient bool
+	active    bool // whether pane_activity is recent (working)
 }
 
-type mockSession struct {
-	ID        string `json:"id"`
-	Directory string `json:"directory"`
-	Title     string `json:"title"`
-	Time      struct {
-		Created int64 `json:"created"`
-		Updated int64 `json:"updated"`
-	} `json:"time"`
-	Tokens int // tokens returned in the message endpoint (not serialized to session list)
+type testEnv struct {
+	t        *testing.T
+	rootDir  string
+	dataDir  string
+	repo     string
+	stubDir  string // directory containing stub tmux binary
+	sessions []mockTmuxSession
+	mu       sync.Mutex
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -87,20 +78,169 @@ func newTestEnv(t *testing.T) *testEnv {
 	gitCmd(t, repo, "push", "origin", "main")
 
 	env := &testEnv{t: t, rootDir: rootDir, dataDir: dataDir, repo: repo}
-	env.startMockServer()
+	env.stubDir = env.writeStubTmux()
 	return env
 }
 
+// writeStubTmux creates a mock tmux script that reads session state from a file.
+// The session state file is at $WT_TEST_SESSIONS (one session per line: name\tdir\tclient\tactive).
+func (e *testEnv) writeStubTmux() string {
+	dir := filepath.Join(e.rootDir, "stubs")
+	os.MkdirAll(dir, 0755)
+
+	stub := filepath.Join(dir, "tmux")
+	script := `#!/bin/sh
+# Mock tmux for wt e2e tests.
+# Session state read from $WT_TEST_SESSIONS file.
+# Format: name<TAB>dir<TAB>has_client<TAB>active
+
+SESSIONS_FILE="$WT_TEST_SESSIONS"
+
+case "$1" in
+    has-session)
+        session="$3"
+        [ -f "$SESSIONS_FILE" ] || exit 1
+        grep -q "^${session}	" "$SESSIONS_FILE" && exit 0
+        exit 1
+        ;;
+    list-sessions)
+        [ -f "$SESSIONS_FILE" ] || exit 0
+        awk -F'\t' '{print $1}' "$SESSIONS_FILE"
+        ;;
+    list-clients)
+        [ -f "$SESSIONS_FILE" ] || exit 0
+        awk -F'\t' '$3 == "true" {print $1}' "$SESSIONS_FILE"
+        ;;
+    display-message)
+        # Parse -t session and -p format
+        session=""
+        fmt=""
+        prev=""
+        for arg in "$@"; do
+            case "$prev" in
+                -t) session="$arg" ;;
+                -p) fmt="$arg" ;;
+            esac
+            prev="$arg"
+        done
+        [ -f "$SESSIONS_FILE" ] || { echo "0"; exit 0; }
+        case "$fmt" in
+            *window_activity*)
+                # Return current time if active, or 0 (epoch) if idle
+                is_active=$(awk -F'\t' -v s="$session" '$1 == s {print $4}' "$SESSIONS_FILE")
+                if [ "$is_active" = "true" ]; then
+                    echo "$(date +%s)"
+                else
+                    echo "0"
+                fi
+                ;;
+            *pane_title*)
+                echo ""
+                ;;
+            *pane_pid*)
+                pid=$(awk -F'\t' -v s="$session" '$1 == s {print NR + 10000}' "$SESSIONS_FILE")
+                echo "${pid:-1}"
+                ;;
+            *)
+                echo ""
+                ;;
+        esac
+        ;;
+    new-session)
+        # Append to sessions file
+        session=""
+        prev=""
+        for arg in "$@"; do
+            case "$prev" in
+                -s) session="$arg" ;;
+            esac
+            prev="$arg"
+        done
+        [ -n "$session" ] && echo "${session}		false	false" >> "$SESSIONS_FILE"
+        ;;
+    send-keys)
+        exit 0
+        ;;
+    kill-session)
+        session="$3"
+        [ -f "$SESSIONS_FILE" ] || exit 0
+        grep -v "^${session}	" "$SESSIONS_FILE" > "${SESSIONS_FILE}.tmp" 2>/dev/null
+        mv "${SESSIONS_FILE}.tmp" "$SESSIONS_FILE" 2>/dev/null
+        ;;
+    attach-session)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+`
+	os.WriteFile(stub, []byte(script), 0755)
+
+	return dir
+}
+
+// sessionsFile returns the path to the mock sessions state file.
+func (e *testEnv) sessionsFile() string {
+	return filepath.Join(e.rootDir, "tmux-sessions")
+}
+
+// syncSessions writes the current session state to the file read by the mock tmux.
+func (e *testEnv) syncSessions() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var lines []string
+	for _, s := range e.sessions {
+		client := "false"
+		if s.hasClient {
+			client = "true"
+		}
+		active := "false"
+		if s.active {
+			active = "true"
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s", s.name, s.dir, client, active))
+	}
+	os.WriteFile(e.sessionsFile(), []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+// createSession creates a mock tmux session for a worktree (working/active state).
+func (e *testEnv) createSession(dir string) {
+	e.t.Helper()
+	name := "wt/" + filepath.Base(dir)
+	e.mu.Lock()
+	e.sessions = append(e.sessions, mockTmuxSession{
+		name:   name,
+		dir:    dir,
+		active: true,
+	})
+	e.mu.Unlock()
+	e.syncSessions()
+}
+
+// createIdleSession creates a mock tmux session in idle state.
+func (e *testEnv) createIdleSession(dir string) {
+	e.t.Helper()
+	name := "wt/" + filepath.Base(dir)
+	e.mu.Lock()
+	e.sessions = append(e.sessions, mockTmuxSession{
+		name:   name,
+		dir:    dir,
+		active: false,
+	})
+	e.mu.Unlock()
+	e.syncSessions()
+}
+
+
 func (e *testEnv) addWorktree(name string) string {
 	e.t.Helper()
-	// New default layout: <parent>/<name> (root="..")
 	wtDir := filepath.Join(filepath.Dir(e.repo), name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
 	return wtDir
 }
 
-// addLegacySiblingWorktree creates a worktree in the old sibling layout:
-// <parent>/<repobase>-<name>. Used to test backward-compat discovery.
 func (e *testEnv) addLegacySiblingWorktree(name string) string {
 	e.t.Helper()
 	wtDir := filepath.Join(filepath.Dir(e.repo), filepath.Base(e.repo)+"-"+name)
@@ -137,153 +277,6 @@ func (e *testEnv) squashMergeToMain(branch string) {
 	gitCmd(e.t, e.repo, "fetch", "origin")
 }
 
-func (e *testEnv) createSession(dir string) {
-	e.t.Helper()
-	now := time.Now().UnixMilli()
-	e.sessionMu.Lock()
-	e.sessions = append(e.sessions, mockSession{
-		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
-		Directory: dir,
-		Title:     "Test instruction compliance",
-		Time: struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		}{Created: now, Updated: now},
-	})
-	e.sessionMu.Unlock()
-}
-
-func (e *testEnv) createIdleSession(dir string) {
-	e.t.Helper()
-	now := time.Now()
-	idle := now.Add(-1 * time.Hour)
-	e.sessionMu.Lock()
-	e.sessions = append(e.sessions, mockSession{
-		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
-		Directory: dir,
-		Title:     "Test instruction compliance",
-		Time: struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		}{Created: idle.UnixMilli(), Updated: idle.UnixMilli()},
-	})
-	e.sessionMu.Unlock()
-}
-
-func (e *testEnv) createSessionWithTokens(dir string, tokens int) {
-	e.t.Helper()
-	now := time.Now()
-	idle := now.Add(-1 * time.Hour)
-	e.sessionMu.Lock()
-	e.sessions = append(e.sessions, mockSession{
-		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
-		Directory: dir,
-		Title:     "Test instruction compliance",
-		Time: struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		}{Created: idle.UnixMilli(), Updated: idle.UnixMilli()},
-		Tokens: tokens,
-	})
-	e.sessionMu.Unlock()
-}
-
-func (e *testEnv) createStaleSession(dir string, tokens int) {
-	e.t.Helper()
-	staleTime := time.Now().Add(-5 * time.Hour)
-	e.sessionMu.Lock()
-	e.sessions = append(e.sessions, mockSession{
-		ID:        fmt.Sprintf("ses_test_%d", len(e.sessions)),
-		Directory: dir,
-		Title:     "Stale session",
-		Time: struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		}{Created: staleTime.UnixMilli(), Updated: staleTime.UnixMilli()},
-		Tokens: tokens,
-	})
-	e.sessionMu.Unlock()
-}
-
-func (e *testEnv) startMockServer() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"healthy": true})
-	})
-	mux.HandleFunc("/session", func(w http.ResponseWriter, r *http.Request) {
-		e.sessionMu.Lock()
-		sessions := make([]mockSession, len(e.sessions))
-		copy(sessions, e.sessions)
-		e.sessionMu.Unlock()
-
-		dir := r.URL.Query().Get("directory")
-		if dir != "" {
-			var filtered []mockSession
-			for _, s := range sessions {
-				if s.Directory == dir {
-					filtered = append(filtered, s)
-				}
-			}
-			sessions = filtered
-		}
-		json.NewEncoder(w).Encode(sessions)
-	})
-	mux.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
-		// Extract session ID from /session/<id>/message and look up
-		// whether the session is active (recent UpdatedAt) or idle.
-		// Return a streaming message (completed=0) for active sessions
-		// and a completed message for idle sessions.
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		var sessionID string
-		if len(parts) >= 2 {
-			sessionID = parts[1]
-		}
-
-		completed := 1 // default: completed (idle)
-		tokens := 0
-		e.sessionMu.Lock()
-		for _, s := range e.sessions {
-			if s.ID == sessionID {
-				age := time.Since(time.UnixMilli(s.Time.Updated))
-				if age < 30*time.Second {
-					completed = 0 // streaming (active)
-				}
-				tokens = s.Tokens
-				break
-			}
-		}
-		e.sessionMu.Unlock()
-
-		type msgInfo struct {
-			Role   string         `json:"role"`
-			Tokens map[string]int `json:"tokens"`
-			Time   map[string]int `json:"time"`
-		}
-		type msg struct {
-			Info msgInfo `json:"info"`
-		}
-		messages := []msg{
-			{Info: msgInfo{
-				Role:   "assistant",
-				Tokens: map[string]int{"total": tokens},
-				Time:   map[string]int{"completed": completed},
-			}},
-		}
-		json.NewEncoder(w).Encode(messages)
-	})
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	srv := &http.Server{Handler: mux}
-	go srv.Serve(ln)
-	e.t.Cleanup(func() { srv.Close() })
-	e.mockURL = "http://" + ln.Addr().String()
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	e.mockPort = port
-}
-
 func (e *testEnv) wt(args ...string) string {
 	e.t.Helper()
 	cmd := exec.Command(wtBinary, args...)
@@ -291,7 +284,8 @@ func (e *testEnv) wt(args ...string) string {
 	cmd.Env = append(os.Environ(),
 		"HOME="+e.rootDir,
 		"WT_REMOTE_HOST=",
-		"WT_OPENCODE_PORT="+e.mockPort,
+		"WT_TEST_SESSIONS="+e.sessionsFile(),
+		"PATH="+e.stubDir+":"+os.Getenv("PATH"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -307,7 +301,8 @@ func (e *testEnv) wtWithExit(args ...string) (string, int) {
 	cmd.Env = append(os.Environ(),
 		"HOME="+e.rootDir,
 		"WT_REMOTE_HOST=",
-		"WT_OPENCODE_PORT="+e.mockPort,
+		"WT_TEST_SESSIONS="+e.sessionsFile(),
+		"PATH="+e.stubDir+":"+os.Getenv("PATH"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -320,7 +315,6 @@ func (e *testEnv) wtWithExit(args ...string) (string, int) {
 }
 
 func (e *testEnv) worktreeExists(name string) bool {
-	// New default layout: <parent>/<name>
 	_, err := os.Stat(filepath.Join(filepath.Dir(e.repo), name))
 	return err == nil
 }
@@ -360,6 +354,24 @@ func (e *testEnv) addRootWorktree(root, name string) string {
 	return wtDir
 }
 
+// wtCreate runs wt (create flow) with stub tmux on PATH.
+func (e *testEnv) wtCreate(args ...string) string {
+	e.t.Helper()
+	cmd := exec.Command(wtBinary, args...)
+	cmd.Dir = e.repo
+	cmd.Env = append(os.Environ(),
+		"HOME="+e.rootDir,
+		"WT_REMOTE_HOST=",
+		"WT_TEST_SESSIONS="+e.sessionsFile(),
+		"PATH="+e.stubDir+":"+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		e.t.Fatalf("wt %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
 func gitCmd(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -380,67 +392,7 @@ func assertContains(t *testing.T, output, substring string) {
 	}
 }
 
-// writeStubOpencode creates a stub shell script that replaces the real opencode
-// binary. It handles:
-//   - "opencode serve --port <port>": stays alive until killed; writes PID to $OPENCODE_PIDFILE
-//   - "opencode attach ...": exits 0 immediately
-func writeStubOpencode(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "serve" ]; then
-  if [ -n "$OPENCODE_PIDFILE" ]; then
-    echo $$ > "$OPENCODE_PIDFILE"
-  fi
-  trap 'exit 0' TERM
-  while true; do sleep 1; done
-fi
-# attach or anything else — just exit 0
-exit 0
-`
-	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-// wtCreate runs the wt binary with the stub opencode on PATH. It sets
-// OPENCODE_PIDFILE and kills any serve process in t.Cleanup.
-func (e *testEnv) wtCreate(args ...string) string {
-	e.t.Helper()
-	stubDir := writeStubOpencode(e.t)
-	pidFile := filepath.Join(e.t.TempDir(), "opencode.pid")
-	cmd := exec.Command(wtBinary, args...)
-	cmd.Dir = e.repo
-	cmd.Env = append(os.Environ(),
-		"HOME="+e.rootDir,
-		"WT_REMOTE_HOST=",
-		"WT_OPENCODE_PORT="+e.mockPort,
-		"OPENCODE_PIDFILE="+pidFile,
-		"PATH="+stubDir+":"+os.Getenv("PATH"),
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		e.t.Fatalf("wt %v: %v\n%s", args, err, out)
-	}
-
-	e.t.Cleanup(func() {
-		data, err := os.ReadFile(pidFile)
-		if err != nil {
-			return // no serve process was started
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil {
-			return
-		}
-		syscall.Kill(pid, syscall.SIGTERM)
-	})
-
-	return string(out)
-}
-
-// --- Targeted rm tests (always removes) ---
+// --- Targeted rm tests ---
 
 func TestTargetedRm_Dirty(t *testing.T) {
 	if testing.Short() {
@@ -473,8 +425,6 @@ func TestTargetedRm_Unmerged(t *testing.T) {
 		t.Error("targeted rm should remove unmerged worktree")
 	}
 }
-
-// --- Workflow tests ---
 
 func TestTargetedRm_CleanNoSession(t *testing.T) {
 	if testing.Short() {
@@ -528,10 +478,6 @@ func TestTargetedRm_PushedUnmerged(t *testing.T) {
 	}
 }
 
-// TestTargetedRm_RegressionOrphanedBranch verifies that wt rm deletes the
-// branch even when the worktree directory has already been removed externally.
-// Previously, git worktree remove would fail on the missing directory and the
-// early return skipped git branch -D, orphaning the branch.
 func TestTargetedRm_RegressionOrphanedBranch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -540,7 +486,6 @@ func TestTargetedRm_RegressionOrphanedBranch(t *testing.T) {
 	env := newTestEnv(t)
 	wtDir := env.addWorktree("orphan-test")
 
-	// Simulate external deletion of the worktree directory.
 	os.RemoveAll(wtDir)
 
 	out := env.wt("rm", "orphan-test")
@@ -552,10 +497,6 @@ func TestTargetedRm_RegressionOrphanedBranch(t *testing.T) {
 
 // --- Batch tests ---
 
-// TestLs_RegressionDetachedHead verifies that worktrees with a detached HEAD
-// appear in wt ls. Previously, discovery filtered on branch being non-empty,
-// and detached worktrees have no branch line in git worktree list --porcelain,
-// so they were silently dropped.
 func TestLs_RegressionDetachedHead(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -566,7 +507,6 @@ func TestLs_RegressionDetachedHead(t *testing.T) {
 	wtDir := env.addWorktree("detached-wt")
 	env.commitFile(wtDir, "f.txt", "work", "add file")
 
-	// Detach HEAD by checking out the current commit directly.
 	head := strings.TrimSpace(gitCmd(t, wtDir, "rev-parse", "HEAD"))
 	gitCmd(t, wtDir, "checkout", head)
 
@@ -576,9 +516,6 @@ func TestLs_RegressionDetachedHead(t *testing.T) {
 	assertContains(t, out, "detached-wt")
 }
 
-// TestTargetedRm_RegressionDetachedHead verifies that wt rm works on a
-// worktree with a detached HEAD — it should remove the worktree directory
-// and skip branch deletion (since there's no branch checked out).
 func TestTargetedRm_RegressionDetachedHead(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -588,7 +525,6 @@ func TestTargetedRm_RegressionDetachedHead(t *testing.T) {
 
 	wtDir := env.addWorktree("detached-rm")
 
-	// Detach HEAD
 	head := strings.TrimSpace(gitCmd(t, wtDir, "rev-parse", "HEAD"))
 	gitCmd(t, wtDir, "checkout", head)
 
@@ -616,8 +552,7 @@ func TestLs_UnifiedStatus(t *testing.T) {
 	env.mergeToMain("batch-merged")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// merged *: squash-merged (unique>0 but merge-tree detects content in main)
-	// Uses idle session so "working" doesn't take priority over "merged".
+	// merged *: squash-merged with idle session
 	wt5 := env.addWorktree("batch-squashed")
 	env.commitFile(wt5, "g.txt", "squashed", "squash feature")
 	env.push("batch-squashed")
@@ -641,9 +576,6 @@ func TestLs_UnifiedStatus(t *testing.T) {
 	assertContains(t, out, "batch-squashed")
 	assertContains(t, out, "empty *")
 
-	// Squash-merged branch has an idle session and unique commits, but merge-tree
-	// detection recognizes its changes are in main — classified as "merged".
-	// Without squash detection it would be "committed".
 	if !strings.Contains(out, "batch-squashed") || !strings.Contains(out, "merged *") {
 		t.Error("squash-merged worktree should be classified as merged *")
 	}
@@ -654,10 +586,6 @@ func TestLs_UnifiedStatus(t *testing.T) {
 	assertContains(t, out, "committed")
 }
 
-// TestLs_MergedButDirty verifies that a squash-merged branch with new
-// uncommitted changes after the merge is classified as "dirty" (not "merged").
-// This is a data-loss protection: "merged" worktrees are auto-removable, so
-// new uncommitted work must override the merged classification.
 func TestLs_MergedButDirty(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -665,7 +593,6 @@ func TestLs_MergedButDirty(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create branch, commit, push, squash-merge into main
 	wt := env.addWorktree("merged-dirty")
 	env.commitFile(wt, "feature.txt", "done", "feature")
 	env.push("merged-dirty")
@@ -673,13 +600,11 @@ func TestLs_MergedButDirty(t *testing.T) {
 	env.squashMergeToMain("merged-dirty")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Now add new uncommitted work in the worktree AFTER the merge
 	os.WriteFile(filepath.Join(wt, "new-work.txt"), []byte("new stuff"), 0644)
 
 	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
-	// Must be "dirty" not "merged" — protects from auto-removal
 	if !strings.Contains(out, "merged-dirty") {
 		t.Fatal("worktree should appear in ls output")
 	}
@@ -689,11 +614,6 @@ func TestLs_MergedButDirty(t *testing.T) {
 	assertContains(t, out, "dirty")
 }
 
-// TestLs_RegressionPushDashU reproduces the bug where `git push -u` overwrites
-// the branch's tracking config from origin/main to origin/<branch>. After the
-// PR merges and the remote branch is deleted (prune), the stale tracking ref
-// broke merge detection — the worktree was misclassified as idle instead of
-// merged.
 func TestLs_RegressionPushDashU(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -701,13 +621,11 @@ func TestLs_RegressionPushDashU(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a branch, commit, and push with -u (overwrites tracking config)
 	wt := env.addWorktree("push-u-branch")
 	env.commitFile(wt, "feature.txt", "done", "add feature")
 	gitCmd(t, env.repo, "push", "-u", "origin", "push-u-branch")
 	env.createIdleSession(wt)
 
-	// Squash-merge into main, then prune the remote branch
 	env.squashMergeToMain("push-u-branch")
 	gitCmd(t, env.repo, "push", "origin", "--delete", "push-u-branch")
 	gitCmd(t, env.repo, "fetch", "--prune")
@@ -720,9 +638,6 @@ func TestLs_RegressionPushDashU(t *testing.T) {
 	}
 }
 
-// TestLs_RegressionPushDashUNoFF reproduces the push -u bug for --no-ff merges.
-// When unique commits = 0 (branch is ancestor of upstream), IsBehindUpstream
-// must still derive the target from the root branch, not the stale tracking ref.
 func TestLs_RegressionPushDashUNoFF(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -735,7 +650,6 @@ func TestLs_RegressionPushDashUNoFF(t *testing.T) {
 	gitCmd(t, env.repo, "push", "-u", "origin", "push-u-noff")
 	env.createIdleSession(wt)
 
-	// --no-ff merge: branch commits become ancestors of upstream
 	env.mergeToMain("push-u-noff")
 	gitCmd(t, env.repo, "push", "origin", "--delete", "push-u-noff")
 	gitCmd(t, env.repo, "fetch", "--prune")
@@ -748,9 +662,6 @@ func TestLs_RegressionPushDashUNoFF(t *testing.T) {
 	}
 }
 
-// TestDiff_RegressionPushDashU verifies that wt diff works correctly when
-// git push -u has overwritten the branch's tracking config and the remote
-// branch has been deleted.
 func TestDiff_RegressionPushDashU(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -770,10 +681,6 @@ func TestDiff_RegressionPushDashU(t *testing.T) {
 	assertContains(t, out, "feature.txt")
 }
 
-// TestLs_RegressionPrunedTrackingRef verifies that squash merge detection
-// works even when the remote tracking ref (refs/remotes/origin/<branch>) has
-// been pruned. Previously IsMerged gated on the tracking ref existing, so
-// fetch.prune=true would cause merged branches to be classified as "committed".
 func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -781,7 +688,6 @@ func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a branch, push, squash-merge, then prune the tracking ref
 	wt := env.addWorktree("pruned-ref")
 	env.commitFile(wt, "h.txt", "pruned", "pruned feature")
 	env.push("pruned-ref")
@@ -789,7 +695,6 @@ func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	env.squashMergeToMain("pruned-ref")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Simulate fetch.prune=true deleting the tracking ref
 	gitCmd(t, env.repo, "update-ref", "-d", "refs/remotes/origin/pruned-ref")
 
 	out := env.wt("ls")
@@ -800,11 +705,6 @@ func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	}
 }
 
-// TestLs_RegressionMergeTreeConflict verifies that squash merge detection
-// works when git merge-tree produces conflicts. This happens when main has
-// moved forward and later commits touch the same files the branch modified.
-// The merge-tree simulation (Phase 2) fails with conflicts, but the patch-id
-// comparison (Phase 3) correctly identifies the squash merge.
 func TestLs_RegressionMergeTreeConflict(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -812,7 +712,6 @@ func TestLs_RegressionMergeTreeConflict(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a branch that modifies a file
 	wt := env.addWorktree("conflict-branch")
 	env.commitFile(wt, "shared.txt", "branch content", "branch change")
 	env.push("conflict-branch")
@@ -820,8 +719,6 @@ func TestLs_RegressionMergeTreeConflict(t *testing.T) {
 	env.squashMergeToMain("conflict-branch")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Now add more commits to main that modify the same file, causing
-	// merge-tree conflicts when it tries to simulate merging the branch.
 	os.WriteFile(filepath.Join(env.repo, "shared.txt"), []byte("later main content"), 0644)
 	gitCmd(t, env.repo, "add", "shared.txt")
 	gitCmd(t, env.repo, "commit", "-m", "main moves forward on same file")
@@ -836,9 +733,6 @@ func TestLs_RegressionMergeTreeConflict(t *testing.T) {
 	}
 }
 
-// TestLs_RegressionMultiCommitSquash verifies that patch-id detection works
-// for branches with multiple commits that are squash-merged into a single
-// commit on main, and where merge-tree produces conflicts.
 func TestLs_RegressionMultiCommitSquash(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -846,7 +740,6 @@ func TestLs_RegressionMultiCommitSquash(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a branch with multiple commits
 	wt := env.addWorktree("multi-commit")
 	env.commitFile(wt, "a.txt", "first change", "commit 1")
 	env.commitFile(wt, "b.txt", "second change", "commit 2")
@@ -856,7 +749,6 @@ func TestLs_RegressionMultiCommitSquash(t *testing.T) {
 	env.squashMergeToMain("multi-commit")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Add a conflicting change on main to force Phase 3
 	os.WriteFile(filepath.Join(env.repo, "a.txt"), []byte("later main content"), 0644)
 	gitCmd(t, env.repo, "add", "a.txt")
 	gitCmd(t, env.repo, "commit", "-m", "main moves forward on same file")
@@ -871,12 +763,6 @@ func TestLs_RegressionMultiCommitSquash(t *testing.T) {
 	}
 }
 
-// TestLs_RegressionRebaseMerge verifies that merges producing zero unique
-// commits are detected. When a branch is rebased onto main (identical SHAs
-// adopted) or merged via --no-ff (commits become ancestors of the merge
-// commit), rev-list sees zero unique commits. The behind-upstream check
-// detects this: the branch tip is a proper ancestor of upstream. Requires
-// a session — a worktree with no session is classified as empty, not merged.
 func TestLs_RegressionRebaseMerge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -884,19 +770,16 @@ func TestLs_RegressionRebaseMerge(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a branch with a commit
 	wt := env.addWorktree("rebase-merged")
 	env.commitFile(wt, "r.txt", "rebase content", "rebase work")
 	env.push("rebase-merged")
 	env.createIdleSession(wt)
 
-	// Simulate rebase merge: fast-forward main to include the branch's commit
 	gitCmd(t, env.repo, "checkout", "main")
 	gitCmd(t, env.repo, "rebase", "rebase-merged")
 	gitCmd(t, env.repo, "push", "origin", "main")
 	gitCmd(t, env.repo, "fetch", "origin")
 
-	// After rebase merge, advance main further so the branch is behind
 	env.commitFile(env.repo, "extra.txt", "more main work", "main advance")
 	gitCmd(t, env.repo, "push", "origin", "main")
 	gitCmd(t, env.repo, "fetch", "origin")
@@ -909,11 +792,6 @@ func TestLs_RegressionRebaseMerge(t *testing.T) {
 	}
 }
 
-// TestLs_RegressionRegularMergeWithSession verifies that a regular merge
-// commit (--no-ff) with a session is detected as merged. After the merge,
-// the branch's commits are ancestors of the merge commit on main, so
-// rev-list sees zero unique commits. The behind-upstream check fires because
-// the branch is behind upstream and has a session.
 func TestLs_RegressionRegularMergeWithSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -926,11 +804,9 @@ func TestLs_RegressionRegularMergeWithSession(t *testing.T) {
 	env.push("regular-merged")
 	env.createIdleSession(wt)
 
-	// Regular merge commit to main
 	env.mergeToMain("regular-merged")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// Advance main so the branch is behind
 	env.commitFile(env.repo, "extra.txt", "main work", "main advance")
 	gitCmd(t, env.repo, "push", "origin", "main")
 	gitCmd(t, env.repo, "fetch", "origin")
@@ -950,12 +826,11 @@ func TestLs_SessionActiveStatus(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	wt := env.addWorktree("batch-active")
-	env.createSession(wt)
+	env.createSession(wt) // has children = working
 
 	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
-	// Session is recent with no commits — shown as working
 	assertContains(t, out, "batch-active")
 	assertContains(t, out, "working")
 }
@@ -990,7 +865,6 @@ func TestBatchRm(t *testing.T) {
 
 // --- Remote host configuration tests ---
 
-// wtRaw runs the wt binary with explicit env overrides, returning combined output and exit code.
 func wtRaw(t *testing.T, env []string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(wtBinary, args...)
@@ -1005,7 +879,7 @@ func wtRaw(t *testing.T, env []string, args ...string) (string, int) {
 	return string(out), 0
 }
 
-func TestRemote_HostNotSet(t *testing.T) {
+func TestRemote_HostUnreachable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -1013,23 +887,7 @@ func TestRemote_HostNotSet(t *testing.T) {
 
 	base := []string{"WT_REMOTE_HOST=", "HOME=" + t.TempDir()}
 
-	out, code := wtRaw(t, base, "-r", "/tmp/fake")
-	if code == 0 {
-		t.Fatal("expected non-zero exit code")
-	}
-	assertContains(t, out, "WT_REMOTE_HOST is not set")
-	assertContains(t, out, "export WT_REMOTE_HOST=")
-}
-
-func TestRemote_HostUnreachable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-
-	base := []string{"WT_REMOTE_HOST=wt-nonexistent-host-test", "HOME=" + t.TempDir()}
-
-	out, code := wtRaw(t, base, "-r", "/tmp/fake")
+	out, code := wtRaw(t, base, "wt-nonexistent-host-test:/tmp/fake")
 	if code == 0 {
 		t.Fatal("expected non-zero exit code")
 	}
@@ -1051,9 +909,7 @@ func TestDiff_CommittedChanges(t *testing.T) {
 	out := env.wt("diff", "diff-test")
 	t.Log("output:\n" + out)
 
-	// Stat summary should list the changed file
 	assertContains(t, out, "feature.txt")
-	// Full diff should contain the file content
 	assertContains(t, out, "new feature content")
 }
 
@@ -1072,8 +928,6 @@ func TestDiff_NoChanges(t *testing.T) {
 	assertContains(t, out, "No changes on this branch.")
 }
 
-// TestDiff_UntrackedFiles verifies that wt diff includes untracked files.
-// Previously, untracked files caused "dirty" status but produced an empty diff.
 func TestDiff_UntrackedFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1087,14 +941,10 @@ func TestDiff_UntrackedFiles(t *testing.T) {
 	out := env.wt("diff", "diff-untracked")
 	t.Log("output:\n" + out)
 
-	// Untracked file should appear in the diff output
 	assertContains(t, out, "new-file.txt")
 	assertContains(t, out, "untracked content")
 }
 
-// TestLs_DirtyFromUntracked verifies that a worktree with only untracked files
-// is classified as "dirty" and the diff is non-empty. This is the invariant:
-// dirty status implies a visible diff.
 func TestLs_DirtyFromUntracked(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1111,7 +961,6 @@ func TestLs_DirtyFromUntracked(t *testing.T) {
 	assertContains(t, out, "untracked-dirty")
 	assertContains(t, out, "dirty")
 
-	// Diff must also be non-empty (the original bug: dirty but empty diff)
 	diffOut := env.wt("diff", "untracked-dirty")
 	assertContains(t, diffOut, "new.txt")
 }
@@ -1132,9 +981,6 @@ func TestDiff_NotFound(t *testing.T) {
 	assertContains(t, out, "not found")
 }
 
-// TestDiff_NonDefaultBranch verifies that wt diff uses the root worktree's
-// branch as the comparison target. When the repo root is checked out to
-// "krocodile", diff should compare against origin/krocodile, not origin/main.
 func TestDiff_NonDefaultBranch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1142,29 +988,22 @@ func TestDiff_NonDefaultBranch(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a non-default branch "krocodile" with its own commits
 	gitCmd(t, env.repo, "checkout", "-b", "krocodile")
 	env.commitFile(env.repo, "kroc.txt", "krocodile content", "krocodile base")
 	gitCmd(t, env.repo, "push", "origin", "krocodile")
 
-	// Now create a worktree from krocodile (repo root is on krocodile)
 	wt := env.addWorktree("feature-on-kroc")
 	env.commitFile(wt, "feature.txt", "new feature", "add feature on krocodile")
 
 	out := env.wt("diff", "feature-on-kroc")
 	t.Log("output:\n" + out)
 
-	// Should show feature.txt (the worktree's change) but NOT kroc.txt
-	// (which is on krocodile, the base branch)
 	assertContains(t, out, "feature.txt")
 	if strings.Contains(out, "kroc.txt") {
 		t.Error("diff should be against origin/krocodile (upstream), not origin/main; kroc.txt should not appear")
 	}
 }
 
-// TestLs_NonDefaultBranch verifies that wt ls correctly classifies worktrees
-// when the repo root is on a non-default branch. Merge detection derives the
-// comparison target from the root worktree's branch (origin/krocodile here).
 func TestLs_NonDefaultBranch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1172,16 +1011,13 @@ func TestLs_NonDefaultBranch(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create a non-default branch "krocodile" with its own commits
 	gitCmd(t, env.repo, "checkout", "-b", "krocodile")
 	env.commitFile(env.repo, "kroc.txt", "krocodile content", "krocodile base")
 	gitCmd(t, env.repo, "push", "origin", "krocodile")
 
-	// Create a worktree from krocodile, commit, push, and merge back
 	wt := env.addWorktree("kroc-merged")
 	env.commitFile(wt, "f.txt", "done", "feature")
 	gitCmd(t, env.repo, "push", "origin", "kroc-merged")
-	// Merge into krocodile (not main)
 	gitCmd(t, env.repo, "checkout", "krocodile")
 	gitCmd(t, env.repo, "merge", "--no-ff", "kroc-merged", "-m", "merge kroc-merged")
 	gitCmd(t, env.repo, "push", "origin", "krocodile")
@@ -1192,12 +1028,9 @@ func TestLs_NonDefaultBranch(t *testing.T) {
 	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
-	// Should be classified as merged (not committed) since it's merged into krocodile
 	if !strings.Contains(out, "kroc-merged") {
 		t.Error("worktree should appear in ls output")
 	}
-	// The branch is merged into origin/krocodile (the root branch), so it must
-	// NOT be classified as "committed".
 	if strings.Contains(out, "committed") {
 		t.Error("worktree should not be classified as committed; root branch derivation is wrong")
 	}
@@ -1212,7 +1045,6 @@ func TestLs_ChildLayout(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create worktrees in both layouts
 	env.addWorktree("sibling-wt")
 	env.addChildWorktree("child-wt")
 
@@ -1246,10 +1078,8 @@ func TestBatchRm_ChildLayout(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// empty * in child layout → removed
 	env.addChildWorktree("child-empty")
 
-	// dirty in child layout → kept
 	wt := env.addChildWorktree("child-dirty")
 	os.WriteFile(filepath.Join(wt, "f.txt"), []byte("x"), 0644)
 
@@ -1276,7 +1106,6 @@ func TestLs_CustomRoot(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create worktree using a custom root
 	env.addRootWorktree(".wt", "custom-root-wt")
 
 	out := env.wt("ls")
@@ -1310,7 +1139,6 @@ func TestLs_LegacySiblingCompat(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	// Create one worktree in the old <repobase>-<name> layout and one in new layout
 	env.addLegacySiblingWorktree("old-sibling")
 	env.addWorktree("new-default")
 
@@ -1335,182 +1163,6 @@ func TestTargetedRm_LegacySiblingCompat(t *testing.T) {
 	if env.legacySiblingWorktreeExists("old-rm") {
 		t.Error("legacy sibling worktree should have been removed")
 	}
-}
-
-// --- Token formatting in ls output ---
-
-func TestLs_TokenFormatting(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-
-	// Small tokens: 500 → "500"
-	wt1 := env.addWorktree("tok-small")
-	env.createSessionWithTokens(wt1, 500)
-
-	// Medium tokens: 15000 → "15k"
-	wt2 := env.addWorktree("tok-medium")
-	env.createSessionWithTokens(wt2, 15000)
-
-	// Large tokens: 1500000 → "1.5M"
-	wt3 := env.addWorktree("tok-large")
-	env.createSessionWithTokens(wt3, 1500000)
-
-	// Kilo with decimal: 1500 → "1.5k"
-	wt4 := env.addWorktree("tok-kilo")
-	env.createSessionWithTokens(wt4, 1500)
-
-	out := env.wt("ls")
-	t.Log("output:\n" + out)
-
-	// Verify each worktree appears with the correctly formatted token string.
-	lines := strings.Split(out, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "tok-small") {
-			assertContains(t, line, "500")
-		}
-		if strings.Contains(line, "tok-medium") {
-			assertContains(t, line, "15k")
-		}
-		if strings.Contains(line, "tok-large") {
-			assertContains(t, line, "1.5M")
-		}
-		if strings.Contains(line, "tok-kilo") {
-			assertContains(t, line, "1.5k")
-		}
-	}
-}
-
-// --- Session status: working (streaming detection) ---
-
-func TestLs_WorkingStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-
-	// createSession uses time.Now() → UpdatedAt is recent → mock returns completed=0 → streaming
-	wt := env.addWorktree("status-working")
-	env.createSession(wt)
-
-	out := env.wt("ls")
-	t.Log("output:\n" + out)
-
-	assertContains(t, out, "status-working")
-	assertContains(t, out, "working")
-}
-
-// --- Session status: stale ---
-
-func TestLs_StaleStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-
-	// Stale session: UpdatedAt > 4h ago, no unique commits
-	wt := env.addWorktree("status-stale")
-	env.createStaleSession(wt, 42000)
-
-	out := env.wt("ls")
-	t.Log("output:\n" + out)
-
-	assertContains(t, out, "status-stale")
-	assertContains(t, out, "stale")
-	// Stale sessions must still show tokens
-	lines := strings.Split(out, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "status-stale") {
-			assertContains(t, line, "42k")
-		}
-	}
-}
-
-// --- Sort ordering ---
-
-func TestLs_SortOrder(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-
-	// Create worktrees with different activity times.
-	// "sort-recent" has a session updated 30min ago → most recent activity
-	wt1 := env.addWorktree("sort-recent")
-	now := time.Now()
-	env.sessionMu.Lock()
-	env.sessions = append(env.sessions, mockSession{
-		ID:        fmt.Sprintf("ses_test_%d", len(env.sessions)),
-		Directory: wt1,
-		Title:     "Recent work",
-		Time: struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		}{Created: now.Add(-1 * time.Hour).UnixMilli(), Updated: now.Add(-30 * time.Minute).UnixMilli()},
-		Tokens: 1000,
-	})
-	env.sessionMu.Unlock()
-
-	// "sort-old" has a session updated 3h ago → older activity
-	wt2 := env.addWorktree("sort-old")
-	env.sessionMu.Lock()
-	env.sessions = append(env.sessions, mockSession{
-		ID:        fmt.Sprintf("ses_test_%d", len(env.sessions)),
-		Directory: wt2,
-		Title:     "Old work",
-		Time: struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		}{Created: now.Add(-4 * time.Hour).UnixMilli(), Updated: now.Add(-3 * time.Hour).UnixMilli()},
-		Tokens: 2000,
-	})
-	env.sessionMu.Unlock()
-
-	// "sort-none" has no session → sorted after those with activity
-	env.addWorktree("sort-none")
-
-	out := env.wt("ls")
-	t.Log("output:\n" + out)
-
-	// Find the positions of each worktree in the output
-	recentIdx := strings.Index(out, "sort-recent")
-	oldIdx := strings.Index(out, "sort-old")
-	noneIdx := strings.Index(out, "sort-none")
-
-	if recentIdx == -1 || oldIdx == -1 || noneIdx == -1 {
-		t.Fatalf("expected all worktrees in output")
-	}
-	if recentIdx > oldIdx {
-		t.Error("sort-recent should appear before sort-old (more recent activity first)")
-	}
-	if oldIdx > noneIdx {
-		t.Error("sort-old should appear before sort-none (activity before no-activity)")
-	}
-}
-
-// --- Name generation format ---
-
-func TestLs_NameFormat(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-
-	// addWorktree creates branches with the exact name passed in.
-	// The real `wt` command uses GenerateName("<project>-<7hex>") to create names.
-	// Verify the branch name shows up correctly in ls output.
-	env.addWorktree("my-feature-abc1234")
-
-	out := env.wt("ls")
-	t.Log("output:\n" + out)
-
-	assertContains(t, out, "my-feature-abc1234")
 }
 
 // --- Error paths ---
@@ -1564,7 +1216,6 @@ func TestRm_ExtraArgs(t *testing.T) {
 
 // --- Create / attach tests ---
 
-// TestHelp verifies that wt --help prints usage and exits 0.
 func TestHelp(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -1578,8 +1229,6 @@ func TestHelp(t *testing.T) {
 	assertContains(t, string(out), "worktree session manager")
 }
 
-// TestCreate_NewWorktree verifies that `wt` (no args) creates a new worktree,
-// sets up the branch with upstream tracking, and attaches via the stub opencode.
 func TestCreate_NewWorktree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1587,10 +1236,9 @@ func TestCreate_NewWorktree(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	out := env.wtCreate()
+	out := env.wtCreate(".")
 	t.Log("output:\n" + out)
 
-	// Output should contain a name matching <repobase>-<7hex>
 	repoBase := filepath.Base(env.repo)
 	nameRe := regexp.MustCompile(regexp.QuoteMeta(repoBase) + `-[0-9a-f]{7}`)
 	match := nameRe.FindString(out)
@@ -1598,25 +1246,20 @@ func TestCreate_NewWorktree(t *testing.T) {
 		t.Fatalf("output does not contain a worktree name matching %s-<7hex>:\n%s", repoBase, out)
 	}
 
-	// Worktree directory should exist as a sibling of the repo (default root="..")
 	wtDir := filepath.Join(filepath.Dir(env.repo), match)
 	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
 		t.Errorf("worktree directory %s was not created", wtDir)
 	}
 
-	// git worktree list should include the new worktree
 	wtList := gitCmd(t, env.repo, "worktree", "list")
 	assertContains(t, wtList, match)
 
-	// Branch should exist
 	branchList := gitCmd(t, env.repo, "branch", "--list", match)
 	if strings.TrimSpace(branchList) == "" {
 		t.Errorf("branch %s was not created", match)
 	}
 }
 
-// TestCreate_AttachExisting verifies that `wt <name>` attaches to an existing
-// worktree (finding its latest session) via the stub opencode.
 func TestCreate_AttachExisting(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
@@ -1624,11 +1267,62 @@ func TestCreate_AttachExisting(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	wtDir := env.addWorktree("test-attach")
-	env.createSession(wtDir)
+	env.addWorktree("test-attach")
+	env.createSession(filepath.Join(filepath.Dir(env.repo), "test-attach"))
 
 	out := env.wtCreate("test-attach")
 	t.Log("output:\n" + out)
 
 	assertContains(t, out, "test-attach")
 }
+
+func TestCreate_WithCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out := env.wtCreate(".", "echo", "hello")
+	t.Log("output:\n" + out)
+
+	repoBase := filepath.Base(env.repo)
+	nameRe := regexp.MustCompile(regexp.QuoteMeta(repoBase) + `-[0-9a-f]{7}`)
+	match := nameRe.FindString(out)
+	if match == "" {
+		t.Fatalf("output does not contain a worktree name matching %s-<7hex>:\n%s", repoBase, out)
+	}
+}
+
+func TestBareWt_ShowsHelp(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+	cmd := exec.Command(wtBinary)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bare wt failed: %v\n%s", err, out)
+	}
+	assertContains(t, string(out), "worktree session manager")
+}
+
+func TestCreate_UnknownNameTriesRemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	out, code := env.wtWithExit("nonexistent-name")
+	t.Log("output:\n" + out)
+
+	if code == 0 {
+		t.Error("expected non-zero exit for unreachable host")
+	}
+	assertContains(t, out, "cannot resolve remote HOME")
+}
+
+// Suppress unused import warnings
+var _ = time.Now
+var _ = fmt.Sprint
