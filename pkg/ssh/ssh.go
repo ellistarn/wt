@@ -2,36 +2,21 @@ package ssh
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/ellistarn/wt/pkg/cmdlog"
 )
 
-// Host returns WT_REMOTE_HOST or an error if unset.
-func Host() (string, error) {
-	host := os.Getenv("WT_REMOTE_HOST")
-	if host == "" {
-		return "", fmt.Errorf("WT_REMOTE_HOST is not set\n\nRemote operations require an SSH host. Set the environment variable:\n\n  export WT_REMOTE_HOST=your-dev-desktop")
-	}
-	return host, nil
-}
 
-// controlPath is the shared SSH mux socket path. The tunnel (EnsureTunnel)
-// creates the mux master; all other SSH calls (Run) reuse it.
-const controlPath = "/tmp/wt-ssh-%r@%h:%p"
+// ControlPath is the shared SSH mux socket path.
+const ControlPath = "/tmp/wt-ssh-%r@%h:%p"
 
-// Run executes a command on the remote host via SSH, passing cmd via stdin to bash.
-// Reuses the tunnel's mux socket if available; falls back to a direct connection.
+// Run executes a command on the remote host via SSH.
 func Run(host, cmd string) (string, error) {
 	c := exec.Command("ssh",
-		"-o", "ControlPath="+controlPath,
-		host, "bash")
-	c.Stdin = strings.NewReader(cmd)
+		"-o", "ControlPath="+ControlPath,
+		host, cmd)
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("ssh %s: %w: %s", host, err, string(out))
@@ -59,62 +44,18 @@ func ResolveRemoteHome(host string) (string, error) {
 	return home, nil
 }
 
-// ToRemotePath translates a local path to its remote equivalent.
-func ToRemotePath(localPath, remoteHome string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine HOME: %w", err)
+// ResolvePath resolves a path for the remote host.
+// Expands ~/... to remoteHome/..., passes absolute paths through.
+func ResolvePath(path, remoteHome string) (string, error) {
+	if strings.HasPrefix(path, "~/") {
+		return remoteHome + path[1:], nil
 	}
-
-	// Expand ~ explicitly
-	if strings.HasPrefix(localPath, "~/") {
-		localPath = home + localPath[1:]
+	if path == "~" {
+		return remoteHome, nil
 	}
-
-	if !strings.HasPrefix(localPath, home) {
-		return "", fmt.Errorf("path must start with $HOME: %s", localPath)
+	if strings.HasPrefix(path, "/") {
+		return path, nil
 	}
-
-	return remoteHome + localPath[len(home):], nil
+	return "", fmt.Errorf("remote path must be absolute or start with ~/: %s", path)
 }
 
-// EnsureTunnel ensures an SSH tunnel from localhost:<localPort> to the remote
-// host's <remotePort> is running. If the tunnel is already up, this is a no-op.
-// Otherwise, starts ssh -fNL <localPort>:localhost:<remotePort> <host> and waits
-// for it to come up. The tunnel is long-lived and shared across wt invocations.
-func EnsureTunnel(host string, localPort, remotePort int) error {
-	if tunnelHealthy(localPort) {
-		return nil
-	}
-	cmd := exec.Command("ssh",
-		"-o", "ControlMaster=yes",
-		"-o", "ControlPath="+controlPath,
-		"-fNL", fmt.Sprintf("%d:localhost:%d", localPort, remotePort), host)
-	cmdlog.LogCmd(fmt.Sprintf("ssh -fNL %d:localhost:%d %s", localPort, remotePort, host))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		// Another process may have started the tunnel between our health
-		// check and this SSH invocation (race on "address already in use").
-		if tunnelHealthy(localPort) {
-			return nil
-		}
-		return fmt.Errorf("failed to start SSH tunnel to %s: %w: %s", host, err, strings.TrimSpace(string(out)))
-	}
-	// Wait for the tunnel to accept connections.
-	for i := 0; i < 20; i++ {
-		if tunnelHealthy(localPort) {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return fmt.Errorf("SSH tunnel started but localhost:%d not reachable", localPort)
-}
-
-// tunnelHealthy checks whether the given port is accepting TCP connections.
-func tunnelHealthy(port int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 500*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}

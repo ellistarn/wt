@@ -17,20 +17,27 @@ func WorktreeDir(repo, root, name string) string {
 	return path.Join(repo, root, name)
 }
 
+// StaleThreshold is the duration after which a session with no recent activity
+// is considered stale.
+const StaleThreshold = 4 * time.Hour
+
 // Entry represents a discovered worktree.
 type Entry struct {
-	Name   string // directory basename — the worktree's stable identity
-	Dir    string // absolute path on the host where it lives
-	Repo   string // repo root path
-	Host   string // hostname where the worktree's server runs (empty = local)
-	Branch string // checked-out branch (empty if HEAD is detached)
-	CreatedAt time.Time // worktree creation time (from filesystem)
-	UpdatedAt time.Time // last session activity (from OpenCode)
-	SessionID string    // most recent OpenCode session ID (empty if none)
-	Status    string    // working or idle; empty if no session
-	Title     string    // OpenCode session title
-	Tokens    int       // total input+output tokens in the most recent session
-	Attached  bool      // true if a TUI client is attached to this worktree
+	Name      string
+	Dir       string
+	Repo      string
+	Host      string
+	Branch    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Status    string // working, idle, stale, or empty string (no session)
+	Title     string
+	Attached  bool
+}
+
+// HasSession reports whether this worktree has an active tmux session.
+func (e Entry) HasSession() bool {
+	return e.Status != "" || e.Attached
 }
 
 // GenerateName returns a project-scoped name for a new worktree.

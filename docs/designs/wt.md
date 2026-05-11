@@ -2,18 +2,17 @@
 
 ## Problem
 
-Multiple AI agents working on the same repository collide -- they edit the same
+Multiple AI agents working on the same repository collide — they edit the same
 files and corrupt each other's git state. Git worktrees solve this: each agent
 gets an isolated working copy on its own branch, confined to its own directory.
-OpenCode enforces the boundary -- given a directory, it stays in it.
 
 Agents run for minutes or hours, and the laptop closes. Local processes die. Work
-must survive beyond the laptop. This requires a persistent environment: OpenCode
-servers that run continuously, with sessions that outlive any client connection.
+must survive beyond the laptop. This requires a persistent session that outlives
+the terminal window.
 
-The developer thinks in worktrees, not sessions, ports, or connection strings.
+The developer thinks in worktrees, not tmux sessions or connection strings.
 "Show me everything in flight. Attach to that one." `wt` binds git worktrees to
-OpenCode sessions -- locally and remotely -- and makes creating, listing, and
+tmux sessions — locally and remotely — and makes creating, listing, and
 resuming trivial.
 
 ## Model
@@ -30,185 +29,100 @@ The **root branch** is whatever branch the repo root currently has checked out
 branch against `origin/<root-branch>`, derived at query time from the repo root's
 HEAD.
 
-A **session** is an OpenCode conversation bound to a worktree directory. Sessions
-persist on the server and carry a title (auto-generated from the first prompt)
-and full message history. A worktree can have multiple sessions; the most recent
-is attached by default. Session lifecycle (creating new sessions, forking) is
-managed from within OpenCode, not by this tool.
+A **session** is a tmux session named `wt/<worktree-name>`. The session starts a
+shell in the worktree directory. Any process can run inside it — an AI agent, an
+editor, a build. `wt` does not control what runs; it only provides the shell and
+the persistent environment.
 
-A session is **working** when the agent is actively generating a response,
-**idle** when the session exists but is not generating, and **stale** when the
-session has been idle for more than 4 hours. A worktree with no session has no
-status.
-
-An **OpenCode server** is a persistent process running `opencode serve`. One
-server per machine hosts all worktrees across all repos. The bulk session API
-(`GET /session`) is scoped to the active project, but directory-filtered queries
-(`GET /session?directory=<dir>`) cross project boundaries. TUI clients are
-stateless -- they re-fetch everything on connect.
-
-Multiple TUI clients can attach to the same server and session simultaneously.
-OpenCode synchronizes state across clients via server-sent events.
+A session is **working** when the tmux window has received output in the last 5
+seconds, **idle** when the session exists but output has stopped, and **stale**
+when the session has been idle for more than 4 hours. A worktree with no tmux
+session has no status.
 
 ## Topology
 
-Local and remote worktrees use the same architecture: a persistent OpenCode
-server with TUI clients attached via `opencode attach`.
+tmux provides session persistence on both local and remote machines. No servers,
+tunnels, or health probes.
 
 ### Local
 
-The OpenCode server runs on the laptop on port 5096. `wt` ensures the server is
-running before any operation — if no server is healthy, `wt` starts
-`opencode serve --port 5096` as a detached process. The server outlives the `wt`
-invocation and is reused across commands.
-
 ```
 laptop
-  opencode serve                     # auto-started by wt, port 5096
+  tmux new-session -d -s wt/<name>    # started by wt
        │
-  wt <name> ──> opencode attach http://localhost:5096
-                  --dir <repo>-<name>
-                  --session <id>
+  wt <name> ──> tmux attach-session -t wt/<name>
 ```
 
 ### Remote
 
-Both machines run an OpenCode server on port 5096, each auto-started by `wt` on
-first use. `wt` maintains an SSH tunnel on port 5097 forwarding to the remote's
-5096. TUI clients run locally, attaching through the tunnel.
-
 ```
 laptop                                       dev desktop
-  opencode serve                               opencode serve
-  (port 5096)                                  (port 5096)
-                                                        ▲
-  ssh -fNL 5097:localhost:5096 ─────────────────────────┘
-       (tunnel, long-lived)
-
-  wt <name> ──> opencode attach http://localhost:5097
-                  --dir <remote worktree path>
-                  --session <id>
+  ssh -t <host> tmux attach ──────────────>    tmux session wt/<name>
 ```
 
-Sessions survive laptop close. On reattach, the TUI reconnects and loads the
-full session state, including any work the agent completed while disconnected.
-
-### Tunnel
-
-`wt` ensures the SSH tunnel exists before any remote HTTP operation. Health
-check: TCP connect to `localhost:5097`. If down, start
-`ssh -fNL 5097:localhost:5096 <host>`. The tunnel is long-lived (`ssh -f`
-backgrounds the process), shared across `wt` invocations. If the tunnel dies,
-the next invocation restarts it.
-
-### Server Lifecycle
-
-`wt` ensures an OpenCode server is running before any operation that needs one,
-using the same pattern as the tunnel: health check, start if not healthy, reuse
-across invocations.
-
-Locally, health check `GET /global/health` on `localhost:5096`. If down, start
-`opencode serve --port 5096` as a detached process. Remotely, the same health
-check goes through the tunnel (`localhost:5097`). If down, start the server via
-`ssh <host>`. Both cases poll until healthy or error.
-
-The server outlives the `wt` invocation. Multiple `wt` invocations reuse the
-same server without starting duplicates. If someone manually starts
-`opencode serve --port 5096`, `wt` reuses it. The server dies on reboot or
-crash; the next `wt` invocation restarts it.
-
-Both `wt`-managed and user-started servers share the same data directory
-(~/.opencode or configured). Sessions are stored globally in SQLite, but the
-bulk session API filters by the active project. Directory-filtered queries
-cross project boundaries, which is how `wt ls` retrieves sessions for
-worktrees across all repos.
-
-If the server dies mid-agent, the next `wt` command restarts it. OpenCode
-sessions are crash-tolerant — incomplete messages are treated as interrupted
-history, and reattaching resumes the session.
+Sessions survive laptop close. The tmux session on the remote continues running.
+On reattach, `wt <name>` SSH-attaches to the existing tmux session.
 
 ## CLI
 
-### `wt [name]`
+### `wt <path> [cmd...]`
 
-Create or resume a worktree.
+Create a new worktree. The first argument is always a path — `.` for the
+current repo, `~/src/api` for a local repo elsewhere, or `host:~/src/api` for a
+remote repo.
 
-- No args: pull the current branch to ensure the worktree starts from the
-  latest remote state. Create a new worktree branched from the current HEAD.
-  Attach. Pull again on exit so the exit summary reflects the
-  latest remote state.
-- With `name`: pull the repo's current branch (best-effort) to keep it fresh
-  for future worktree creation and merge detection. Resume
-  `<repo>-<name>`. Attach. Pull again on exit.
+- Path only: create the worktree, open a shell in it.
+- Path + args: create the worktree and run the args as a command inside the
+  session.
 
-### `wt -r <path>`
+Examples:
+```
+wt .                          # new worktree in cwd repo, shell
+wt . claude                   # new worktree in cwd repo, run claude
+wt ~/src/api opencode         # new worktree in ~/src/api, run opencode
+wt dev:~/src/api              # new worktree on remote, shell
+wt dev:~/src/api claude       # new worktree on remote, run claude
+```
 
-Create a new remote worktree.
+Pull the current branch before creating (hard-fail on error). Pull again on
+exit so the exit summary reflects the latest remote state.
 
-- `path` identifies the repo as a local-style path
-  (e.g., `~/src/acme/api`), translated to the remote
-  equivalent.
-- Pulls the current branch, then creates a new worktree. Attach. Pull again
-  on exit.
+### `wt <name>`
 
-### Attach
+Resume an existing worktree. `name` matches worktree names by exact match or
+suffix (e.g., `a3f8c12` matches `api-a3f8c12`).
 
-All attach operations follow the same steps:
+If the tmux session exists, attach to it. If it died (the worktree exists but
+no tmux session), create a new session with a shell.
 
-1. Resolve the server URL (local: `http://localhost:5096`, remote:
-   `http://localhost:5097` via the SSH tunnel).
-2. Ensure the server is running (local or tunnel + remote). Fail with a clear
-   message if the server cannot be started.
-3. Query `GET /session` filtered by the worktree directory. Select the most
-   recently updated session.
-4. Run `opencode attach <server> --dir <dir> --session <id>`.
+Pull the repo's current branch (best-effort) before attaching. Pull again on
+exit.
 
-If no session exists for the worktree, `opencode attach` is run without
-`--session`. OpenCode creates a new session on first prompt.
+### Dispatch
+
+The first argument is classified as:
+
+1. **Subcommand** — `ls`, `rm`, `diff`.
+2. **Path** — starts with `.`, `/`, `~/`, or contains `:`.
+3. **Name** — everything else. Looked up as an existing worktree. If no
+   worktree matches, treated as a remote host with `~` as the default path.
+
+Bare `wt` (no arguments) prints help.
 
 ### `wt rm [name]`
 
 Remove worktrees.
 
 **Targeted** (`wt rm <name>`): removes the worktree unconditionally.
-Force-deletes the worktree directory and branch. The user already knows the
-state from `wt ls`.
+Force-deletes the worktree directory and branch. Kills the tmux session if one
+exists.
 
 **Batch** (`wt rm`): removes worktrees whose status is `merged`, `stale`, or
 `empty`. These are the worktrees with no at-risk state — either the work
 landed, the session went dormant with no commits, or no session was ever
-created. All other statuses are kept. `wt ls` is the preview.
-
-Merge detection compares the worktree's branch against `origin/<root-branch>`.
-Detection splits into two paths based on whether the branch has commits not
-reachable from the target (`git rev-list --count target..branch`).
-
-When the branch has **unique commits** (count > 0), three phases run in order:
-(1) ancestry check (`merge-base --is-ancestor`) — the branch tip is a graph
-ancestor of the target, meaning a merge commit incorporated it; (2) merge-tree
-simulation (`merge-tree --write-tree`, requires git 2.38+) — simulating the
-merge produces the same tree as the target, meaning the branch's diff is already
-present (catches squash merges and GitHub rebase merges, which create new SHAs);
-(3) patch-id comparison — the branch's aggregate diff has the same patch-id as a
-commit on the target (catches squash merges when merge-tree produces conflicts
-because the target moved forward). Phase 3 scans at most 500 commits on the
-target range to bound cost.
-
-When the branch has **zero unique commits** (count = 0), the branch's commits
-are already reachable from the target — either because a merge commit made them
-ancestors, or because the target adopted them with identical SHAs (fast-forward).
-In this case the three-phase check is not applicable (there is nothing unique to
-match against). Instead, a behind-target check fires: if the branch tip is a
-proper ancestor of the target (behind, not at the same commit) and the worktree
-has a session, it is classified as merged. A branch at exactly the target tip has
-not diverged and is classified by session lifecycle (idle, stale, or empty).
-
-All commands pull from origin (`git pull --ff-only --prune`) to keep the
-current branch fresh for accurate merge detection and status classification.
-Pre-creation pulls hard-fail (stale branch means the new worktree branches from
-the wrong place). All other pulls are best-effort — warn and continue. Removal
-deletes the worktree directory and the branch. Session history in the database
-is not touched.
+created. All other statuses are kept. `wt ls` is the preview. Additionally,
+kills any `wt/` tmux sessions that don't correspond to a discovered worktree
+(orphans from worktrees removed outside `wt`).
 
 ### `wt diff <name>`
 
@@ -219,8 +133,8 @@ capturing both committed and uncommitted changes. Untracked files are included
 as new-file diffs.
 
 Output: `--stat` summary printed directly (stays in scrollback), then the full
-diff piped through `less -R` when stdout is a terminal. When piped (e.g., to an
-LLM or file), the full diff is printed directly with no color and no pager.
+diff piped through `less -R` when stdout is a terminal. When piped, the full
+diff is printed directly with no color and no pager.
 
 ### `wt ls`
 
@@ -229,152 +143,149 @@ and remote worktrees (all repos on the dev desktop) are discovered concurrently
 and merged into a single table sorted by most recent activity, with removable
 entries (`*`) pushed to the bottom.
 
-Session metadata is fetched from the OpenCode server API, not from the database
-directly. For each server (local and remote), per worktree (parallel, bounded to
-8 concurrent):
-
-1. `GET /session?directory=<dir>` — fetches the most recent session for that
-   worktree. Per-directory queries cross OpenCode project boundaries, unlike the
-   bulk `GET /session` endpoint which is scoped to the active project.
-2. `GET /session/<id>/message` — reads the last assistant message's total token
-   count (context window size) and derives working/idle from whether that message
-   has completed.
-
-Working/idle detection uses the last assistant message's `completed` timestamp:
-- `completed == null` → working (streaming)
-- `completed != null` → idle
-
-The server's `UpdatedAt` does not advance during streaming, so there is no
-reliable way to distinguish a long-running response from a crash orphan.
-`completed == null` is treated as working — a false positive ("working" on a
-crashed session) is preferable to a false negative (hiding active work).
-
-Git state is determined per worktree (parallel, bounded to 8 concurrent) by
-checking the working tree and branch against `origin/<root-branch>`.
-
 ```
-WORKTREE    STATUS       TITLE                           URI                                     TOKENS  ACTIVITY  AGE
-a3f8c12     attached     Fix auth handler validation      dev-desktop:5096/~/.../acme/api         150k    now       3h
-b7e2a09     committed    Refactor config parser           localhost:5096/~/.../acme/api            42k     5m        1d
-c9a1f57     working      Migrate database schema          dev-desktop:5096/~/.../acme/api          12k     now       2h
-d5b8e24     merged *     Add retry logic                  localhost:5096/~/.../acme/api            80k     1h        2d
-e1d4b83     empty *      -                                dev-desktop:5096/~/.../acme/web          -       -         2d
+WORKTREE    STATUS       TITLE     URI                                 ACTIVITY  AGE
+a3f8c12     attached     OpenCode  dev-desktop:~/.../acme/api          now       3h
+b7e2a09     committed    -         localhost:~/.../acme/api             5m        1d
+c9a1f57     working      Claude    dev-desktop:~/.../acme/api          now       2h
+d5b8e24     merged *     -         localhost:~/.../acme/api             1h        2d
+e1d4b83     empty *      -         dev-desktop:~/.../acme/web           -         2d
 ```
 
 Columns:
 
 | Column | Value |
 |--------|-------|
-| WORKTREE | Worktree directory name (the stable identifier even if the branch is renamed). |
+| WORKTREE | Worktree directory name. |
 | STATUS | Single highest-priority state from the table below. |
-| TITLE | Session title, auto-generated from the first prompt. `-` if no session. |
-| ACTIVITY | How recently the session was active. `now` when the agent is streaming. When idle, shows when the last assistant message completed (e.g. `5m`, `3h`, `1d`). `-` if no session. |
-| TOKENS | Context window size from the last assistant message in the most recent session. Formatted as `12k`, `150k`. `-` if no session. |
-| URI | OpenCode server and repo path, formatted as `host:port/path`. Path is shortened to `~/.../parent/name` when deep. Local worktrees show `localhost`; remote worktrees show the remote hostname. |
+| TITLE | Terminal title set by the process running in the pane (via `\033]0;title\007` escape sequence). Any process can set this. `-` if no session. |
+| URI | `host:path`. Path shortened to `~/.../parent/name` when deep. Local shows `localhost`. |
+| ACTIVITY | How recently the tmux window received output. `-` if no session. |
 | AGE | When the worktree was created. |
+
+## Status
 
 Status values, in priority order (highest wins). Statuses marked `*` are
 removed by `wt rm`.
 
 | Status | Meaning |
 |--------|---------|
-| `attached` | TUI client connected |
-| `working` | Agent streaming (last assistant message incomplete) |
+| `attached` | tmux client connected |
+| `working` | Window received output in last 5 seconds |
 | `dirty` | Visible changes in diff not accounted for by unmerged commits |
 | `merged *` | Changes incorporated into `origin/<root-branch>` |
 | `committed` | Unique commits not yet in `origin/<root-branch>` |
-| `empty *` | No session was ever created |
+| `empty *` | No tmux session exists |
 | `stale *` | Session inactive >4 hours, no unique commits |
 | `idle` | Session exists, no unique commits, recent |
 
 Session states (`attached`, `working`) take priority — the worktree is in active
 use. Git states (`dirty`, `merged`, `committed`) take priority next — they
-describe the safety of the work. The diff (merge-base comparison + untracked
-files) is the single gate: if the diff is empty, the worktree cannot be dirty.
-If the diff is non-empty with no unique commits, the changes must be uncommitted
-→ dirty. `merged` covers both detection paths: unique commits detected as landed
-(three-phase), and zero unique commits with the branch behind the target
-(behind-target check). Session lifecycle states (`empty`, `stale`, `idle`) apply
-when the diff is empty and the branch has no unique commits. A worktree with no
-session is `empty` regardless of the branch's position relative to the target —
-it never had work to merge. A worktree with a session whose branch is behind the
-target is `merged` — the work landed via a merge that made the branch's commits
-reachable from the target. Attachment is detected by scanning local `opencode attach` processes. Orphaned attach processes (ppid == 1, reparented to init/launchd after the parent `wt` process died) are killed and excluded — this prevents phantom "attached" status on dead sessions.
+describe the safety of the work. Session lifecycle states (`empty`, `stale`,
+`idle`) apply when the diff is empty and the branch has no unique commits.
 
-## Reconnection
+### Working Detection
 
-1. Laptop opens.
-2. `wt ls` shows everything in flight (ensures the server and tunnel as needed).
-3. `wt a3f8c12` resumes (works for both local and remote worktrees).
+tmux tracks `window_activity` — the Unix timestamp of the last output received
+by the window. If `now - window_activity < 5 seconds`, the session is working.
+This is fully generic: any process that writes to stdout when active (streaming,
+building, running tools) and goes quiet when waiting for input.
 
-## Assumptions
+### Merge Detection
 
-- The repo root checkout is clean. Worktree creation pulls the current branch,
-  so conflicts or uncommitted changes would cause a failure. The checked-out
-  branch becomes the base for the new worktree's commits.
-- The remote host is reachable via SSH.
-- `opencode` is available on PATH (locally and on the remote host).
+Merge detection compares the worktree's branch against `origin/<root-branch>`.
+Detection splits into two paths based on whether the branch has commits not
+reachable from the target (`git rev-list --count target..branch`).
+
+When the branch has **unique commits** (count > 0): (1) ancestry check
+(`merge-base --is-ancestor`); (2) merge-tree simulation (`merge-tree
+--write-tree`, git 2.38+) catches squash and rebase merges; (3) patch-id
+comparison catches squash merges when merge-tree produces conflicts. Phase 3
+scans at most 500 commits.
+
+When the branch has **zero unique commits** (count = 0): the branch's commits
+are already reachable from the target. A behind-target check fires: if the
+branch tip is a proper ancestor of the target and the worktree has a session, it
+is classified as merged.
+
+## Enrichment
+
+For each worktree with a matching tmux session, `wt` queries:
+
+1. `tmux list-clients -F #{client_session}` — attached status.
+2. `tmux display-message -t <session> -p '#{window_activity}'` — working/idle.
+3. `tmux display-message -t <session> -p '#{pane_title}'` — title.
+
+All enrichment is best-effort. If tmux queries fail, the worktree appears
+without session metadata.
+
+## Transport
+
+```go
+type Transport interface {
+    Tmux(args ...string) (string, error)
+    TmuxAttach(session string) error
+    Exec(cmd string) (string, error)
+    Host() string
+}
+```
+
+Two implementations:
+
+- **Local**: `exec.Command("tmux", ...)` directly. `TmuxAttach` takes over the
+  terminal with signal forwarding.
+- **SSH**: `ssh host "cmd"` for `Tmux` and `Exec`. `TmuxAttach` runs
+  `ssh -t host tmux attach-session -t <session>`.
+
+SSH reuses a ControlPath mux socket for connection sharing.
 
 ## Configuration
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `WT_REMOTE_HOST` | For remote operations | — | SSH hostname of the remote dev desktop |
-| `WT_OPENCODE_PORT` | No | `5096` | OpenCode server port (local and remote). Tunnel port is always server port + 1. |
+| `WT_REMOTE_HOST` | For remote discovery | — | SSH hostname of the remote dev desktop |
 
-## Implementation
+## Assumptions
 
-Go binary. Shells out to `ssh` for remote git operations and to `opencode` for
-TUI attachment. Queries the OpenCode HTTP API for session metadata in listings
-and for session discovery when attaching.
+- tmux 1.9+ is installed on all machines where worktrees are managed.
+- The repo root checkout is clean. Worktree creation pulls the current branch.
+- The remote host is reachable via SSH.
+- Processes set their terminal title if they want it to appear in `wt ls`.
 
 ## Scoped Out
 
 - Auto-reattach on laptop wake.
-- Session lifecycle (new, fork). Managed from within OpenCode.
-- Multiple remote hosts.
-- Conflict detection when running bare `opencode` alongside the managed server.
+- Multiple remote hosts for discovery (create supports any host via `host:path`).
+- Token tracking, session store querying, agent-specific behavior.
+- Process lifecycle management (restarting crashed processes).
 
 ## Rejected Alternatives
 
-**Bash** — JSON parsing for the OpenCode API requires external tooling. Go gives a
-static binary with native HTTP and JSON support.
+**OpenCode client/server** — HTTP servers, health probes, SSH tunnels, daemon
+management. Unreliable (race conditions, orphaned tunnels, stale ports). tmux
+solves session persistence as a 15-year solved problem.
 
-**cmux SSH for remote TUI** — The TUI runs on the dev desktop, viewed through a
-forwarded terminal. Breaks on disconnect. `opencode attach` runs the TUI locally
-and reconnects cleanly.
+**pgrep for working detection** — Checking if the pane process has children to
+determine "working." Platform differences, doesn't catch streaming (no child
+process), requires knowing the process tree. `window_activity` is simpler and
+generic.
 
-**Server per worktree** — Port management overhead. The OpenCode server's
-`directory` parameter handles multi-project in one process.
+**Agent abstraction (pkg/agent)** — Interface with Command/ResumeCommand per
+agent type. Over-engineered when `wt <path> <cmd>` lets the user pass any
+command directly.
 
-**Separate local/remote tools** — Same workflow, different transport. One tool with
-a `-r` flag.
+**Agent session store for enrichment** — Querying OpenCode's SQLite or Claude's
+JSONL for title/tokens/activity. Fragile, agent-specific, requires parsing
+internal formats. `pane_title` and `window_activity` are generic tmux features
+that work with any process.
 
-**Embedded server for local** — Running bare `opencode` starts a new server per
-invocation. Double-attaching creates a second server with an empty session instead
-of joining the existing one. A persistent server with `opencode attach` gives
-consistent multi-client behavior.
+**`-c` flag for tmux new-session** — The start-directory flag was added in tmux
+1.9 and some environments still run older versions. Using
+`cd '<dir>' && exec $SHELL` as the session command works everywhere.
 
-**SQLite for session metadata** — Querying the OpenCode database directly is a
-layer violation. The HTTP API is the stable contract.
+**Bash/zsh hardcoded in SSH** — `ssh host "cmd"` passes the command to the
+remote user's configured login shell. No need to hardcode which shell to use.
 
-**External server management** — Running `opencode serve` as a systemd unit or
-launchd plist requires manual setup on every machine and creates env-wiring
-problems (systemd does not inherit the user's shell environment — AWS
-credentials, PATH). `wt` starting the server as a detached child inherits the
-user's env and makes the tool self-contained.
-
-**External SSH tunnel** — Couples `wt` to external infrastructure (launchd plist,
-shell aliases). The tunnel is a prerequisite for every remote operation; managing
-it internally makes the tool self-contained.
-
-**Per-command SSH tunnel** — SSH handshake costs ~500ms per invocation. A
-long-lived tunnel amortizes the cost across all `wt` commands.
-
-**Remote TUI over SSH** — Running the TUI on the remote host and forwarding the
-terminal adds latency to every keystroke and breaks the local-client model where
-`opencode attach` runs on the laptop.
-
-**`wt rm --dry-run`** — `wt ls` already shows the unified status that determines
-what `wt rm` will remove. A separate preview command duplicates information the
-user can read from `ls`.
+**`-r` flag for remote** — Requires a separate env var (`WT_REMOTE_HOST`) and
+different mental model. `host:path` syntax is self-contained — the target is
+fully specified in one argument.

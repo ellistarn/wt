@@ -53,8 +53,7 @@ func SortRows(rows []Row) {
 }
 
 // PrintTable prints rows as an aligned table. Removable statuses get a * suffix.
-// serverPort is the OpenCode server port used to render the URI column.
-func PrintTable(rows []Row, serverPort int) {
+func PrintTable(rows []Row) {
 	if len(rows) == 0 {
 		return
 	}
@@ -62,7 +61,7 @@ func PrintTable(rows []Row, serverPort int) {
 		fmt.Println()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tURI\tTOKENS\tACTIVITY\tAGE\n")
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tURI\tACTIVITY\tAGE\n")
 
 	now := time.Now()
 	for _, r := range rows {
@@ -72,14 +71,13 @@ func PrintTable(rows []Row, serverPort int) {
 			status += " *"
 		}
 		activity := formatActivity(e.UpdatedAt, now)
-		tokens := formatTokens(e.Tokens)
 		title := e.Title
 		if title == "" {
 			title = "-"
 		}
-		uri := formatURI(e.Host, e.Dir, serverPort)
+		uri := formatURI(e.Host, e.Dir)
 		age := formatDuration(e.CreatedAt, now)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, uri, tokens, activity, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, uri, activity, age)
 	}
 
 	w.Flush()
@@ -111,28 +109,6 @@ func formatDuration(t time.Time, now time.Time) string {
 	}
 }
 
-// formatTokens formats a token count as a compact string (e.g. "12k", "1.5M").
-func formatTokens(tokens int) string {
-	if tokens == 0 {
-		return "-"
-	}
-	switch {
-	case tokens < 1000:
-		return fmt.Sprintf("%d", tokens)
-	case tokens < 1_000_000:
-		k := float64(tokens) / 1000
-		if k < 10 {
-			return fmt.Sprintf("%.1fk", k)
-		}
-		return fmt.Sprintf("%dk", int(k))
-	default:
-		m := float64(tokens) / 1_000_000
-		if m < 10 {
-			return fmt.Sprintf("%.1fM", m)
-		}
-		return fmt.Sprintf("%dM", int(m))
-	}
-}
 
 // formatRepo shortens the repo path by replacing $HOME with ~ and eliding
 // middle segments when the path is long. Short paths are left as-is.
@@ -157,14 +133,11 @@ func formatRepo(repo string) string {
 	return repo
 }
 
-// formatURI combines host and worktree dir into a single host:port/path string.
-func formatURI(host, repo string, port int) string {
+// formatURI combines host and worktree dir into a single host:path string.
+func formatURI(host, dir string) string {
 	if host == "" {
 		host = "localhost"
 	}
-	path := formatRepo(repo)
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return fmt.Sprintf("%s:%d%s", host, port, path)
+	path := formatRepo(dir)
+	return fmt.Sprintf("%s:%s", host, path)
 }

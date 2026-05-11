@@ -10,24 +10,24 @@ import (
 	"github.com/ellistarn/wt/pkg/ssh"
 )
 
-// RepoRoot returns the repo root. If host is empty, runs locally.
-// For remote, pass the remote directory as extra args.
+// RepoRoot returns the repo root. If host is empty, runs locally in dir.
+// dir defaults to "." if not provided.
 func RepoRoot(host string, dir ...string) (string, error) {
+	d := "."
+	if len(dir) > 0 && dir[0] != "" {
+		d = dir[0]
+	}
 	if host == "" {
-		out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+		cmd := exec.Command("git", "-C", d, "rev-parse", "--show-toplevel")
+		out, err := cmd.Output()
 		if err != nil {
 			return "", err
 		}
 		root := strings.TrimSpace(string(out))
-		// Resolve symlinks so paths match OpenCode session directories
 		if resolved, err := filepath.EvalSymlinks(root); err == nil {
 			root = resolved
 		}
 		return root, nil
-	}
-	d := "."
-	if len(dir) > 0 {
-		d = dir[0]
 	}
 	out, err := ssh.Run(host, fmt.Sprintf("git -C '%s' rev-parse --show-toplevel", d))
 	if err != nil {
