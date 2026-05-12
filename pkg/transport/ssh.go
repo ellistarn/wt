@@ -14,7 +14,10 @@ type SSH struct {
 func NewSSH(host string) *SSH { return &SSH{host: host} }
 
 func (s *SSH) Tmux(args ...string) (string, error) {
-	cmd := "tmux " + shellJoin(args)
+	// Non-interactive SSH doesn't source login profiles, so LANG is unset.
+	// If this command starts the tmux server, the server permanently inherits
+	// ASCII character-width tables, breaking all Unicode rendering in sessions.
+	cmd := "LANG=C.UTF-8 tmux " + shellJoin(args)
 	return ssh.Run(s.host, cmd)
 }
 
