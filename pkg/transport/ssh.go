@@ -22,9 +22,13 @@ func (s *SSH) Tmux(args ...string) (string, error) {
 }
 
 func (s *SSH) TmuxAttach(session string) error {
+	// LANG must be set for the client process too — tmux uses the attaching
+	// client's locale to decide whether to output UTF-8 to the terminal.
+	// Without it, the client inherits POSIX locale from sshd and tmux disables
+	// UTF-8 output, garbling all multi-byte characters on screen.
 	cmd := exec.Command("ssh", "-t",
 		"-o", "ControlPath="+ssh.ControlPath,
-		s.host, "tmux", "attach-session", "-t", session)
+		s.host, "LANG=C.UTF-8", "tmux", "attach-session", "-t", session)
 	return runInteractive(cmd)
 }
 
