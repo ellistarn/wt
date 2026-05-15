@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -39,22 +38,11 @@ func mustCwd() string {
 	return d
 }
 
-// mockTmuxSession represents a tmux session in the mock.
-type mockTmuxSession struct {
-	name      string
-	dir       string
-	hasClient bool
-	active    bool // whether pane_activity is recent (working)
-}
-
 type testEnv struct {
-	t        *testing.T
-	rootDir  string
-	dataDir  string
-	repo     string
-	stubDir  string // directory containing stub tmux binary
-	sessions []mockTmuxSession
-	mu       sync.Mutex
+	t       *testing.T
+	rootDir string
+	repo    string
+	stubDir string // directory containing mock opencode binary
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -64,9 +52,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		rootDir = resolved
 	}
 
-	dataDir := filepath.Join(rootDir, "data")
-	os.MkdirAll(dataDir, 0755)
-
 	bare := filepath.Join(rootDir, "origin.git")
 	gitCmd(t, "", "init", "--bare", bare)
 
@@ -74,165 +59,57 @@ func newTestEnv(t *testing.T) *testEnv {
 	gitCmd(t, "", "clone", bare, repo)
 	gitCmd(t, repo, "config", "user.email", "test@test.com")
 	gitCmd(t, repo, "config", "user.name", "Test")
-	gitCmd(t, repo, "commit", "--allow-empty", "-m", "initial")
+
+	// Add .opencode to .gitignore as part of initial commit so it never
+	// appears as untracked in any worktree.
+	os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".opencode/\n"), 0644)
+	gitCmd(t, repo, "add", ".gitignore")
+	gitCmd(t, repo, "commit", "-m", "initial")
 	gitCmd(t, repo, "push", "origin", "main")
 
-	env := &testEnv{t: t, rootDir: rootDir, dataDir: dataDir, repo: repo}
-	env.stubDir = env.writeStubTmux()
+	env := &testEnv{t: t, rootDir: rootDir, repo: repo}
+	env.stubDir = env.writeStubOpenCode()
 	return env
 }
 
-// writeStubTmux creates a mock tmux script that reads session state from a file.
-// The session state file is at $WT_TEST_SESSIONS (one session per line: name\tdir\tclient\tactive).
-func (e *testEnv) writeStubTmux() string {
+// writeStubOpenCode creates a mock opencode script that creates .opencode/ dir and exits.
+func (e *testEnv) writeStubOpenCode() string {
 	dir := filepath.Join(e.rootDir, "stubs")
 	os.MkdirAll(dir, 0755)
 
-	stub := filepath.Join(dir, "tmux")
+	stub := filepath.Join(dir, "opencode")
 	script := `#!/bin/sh
-# Mock tmux for wt e2e tests.
-# Session state read from $WT_TEST_SESSIONS file.
-# Format: name<TAB>dir<TAB>has_client<TAB>active
-
-SESSIONS_FILE="$WT_TEST_SESSIONS"
-
-case "$1" in
-    has-session)
-        session="$3"
-        [ -f "$SESSIONS_FILE" ] || exit 1
-        grep -q "^${session}	" "$SESSIONS_FILE" && exit 0
-        exit 1
-        ;;
-    list-sessions)
-        [ -f "$SESSIONS_FILE" ] || exit 0
-        awk -F'\t' '{print $1}' "$SESSIONS_FILE"
-        ;;
-    list-clients)
-        [ -f "$SESSIONS_FILE" ] || exit 0
-        awk -F'\t' '$3 == "true" {print $1}' "$SESSIONS_FILE"
-        ;;
-    display-message)
-        # Parse -t session and -p format
-        session=""
-        fmt=""
-        prev=""
-        for arg in "$@"; do
-            case "$prev" in
-                -t) session="$arg" ;;
-                -p) fmt="$arg" ;;
-            esac
-            prev="$arg"
-        done
-        [ -f "$SESSIONS_FILE" ] || { echo "0"; exit 0; }
-        case "$fmt" in
-            *window_activity*)
-                # Return current time if active, or 0 (epoch) if idle
-                is_active=$(awk -F'\t' -v s="$session" '$1 == s {print $4}' "$SESSIONS_FILE")
-                if [ "$is_active" = "true" ]; then
-                    echo "$(date +%s)"
-                else
-                    echo "0"
-                fi
-                ;;
-            *pane_title*)
-                echo ""
-                ;;
-            *pane_pid*)
-                pid=$(awk -F'\t' -v s="$session" '$1 == s {print NR + 10000}' "$SESSIONS_FILE")
-                echo "${pid:-1}"
-                ;;
-            *)
-                echo ""
-                ;;
-        esac
-        ;;
-    new-session)
-        # Append to sessions file
-        session=""
-        prev=""
-        for arg in "$@"; do
-            case "$prev" in
-                -s) session="$arg" ;;
-            esac
-            prev="$arg"
-        done
-        [ -n "$session" ] && echo "${session}		false	false" >> "$SESSIONS_FILE"
-        ;;
-    send-keys)
-        exit 0
-        ;;
-    kill-session)
-        session="$3"
-        [ -f "$SESSIONS_FILE" ] || exit 0
-        grep -v "^${session}	" "$SESSIONS_FILE" > "${SESSIONS_FILE}.tmp" 2>/dev/null
-        mv "${SESSIONS_FILE}.tmp" "$SESSIONS_FILE" 2>/dev/null
-        ;;
-    attach-session)
-        exit 0
-        ;;
-    *)
-        exit 0
-        ;;
-esac
+# Mock opencode for wt e2e tests.
+# Creates .opencode/ directory to simulate session creation, then exits.
+mkdir -p .opencode
+touch .opencode/session
+exit 0
 `
 	os.WriteFile(stub, []byte(script), 0755)
-
 	return dir
 }
 
-// sessionsFile returns the path to the mock sessions state file.
-func (e *testEnv) sessionsFile() string {
-	return filepath.Join(e.rootDir, "tmux-sessions")
-}
-
-// syncSessions writes the current session state to the file read by the mock tmux.
-func (e *testEnv) syncSessions() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	var lines []string
-	for _, s := range e.sessions {
-		client := "false"
-		if s.hasClient {
-			client = "true"
-		}
-		active := "false"
-		if s.active {
-			active = "true"
-		}
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s", s.name, s.dir, client, active))
-	}
-	os.WriteFile(e.sessionsFile(), []byte(strings.Join(lines, "\n")+"\n"), 0644)
-}
-
-// createSession creates a mock tmux session for a worktree (working/active state).
-func (e *testEnv) createSession(dir string) {
+// simulateSession creates a .opencode/ directory in the worktree to simulate
+// that opencode was previously run there.
+func (e *testEnv) simulateSession(wtDir string) {
 	e.t.Helper()
-	name := "wt/" + filepath.Base(dir)
-	e.mu.Lock()
-	e.sessions = append(e.sessions, mockTmuxSession{
-		name:   name,
-		dir:    dir,
-		active: true,
-	})
-	e.mu.Unlock()
-	e.syncSessions()
+	ocDir := filepath.Join(wtDir, ".opencode")
+	os.MkdirAll(ocDir, 0755)
+	os.WriteFile(filepath.Join(ocDir, "session"), []byte("mock"), 0644)
 }
 
-// createIdleSession creates a mock tmux session in idle state.
-func (e *testEnv) createIdleSession(dir string) {
+// simulateStaleSession creates a .opencode/ directory with old mtime.
+func (e *testEnv) simulateStaleSession(wtDir string) {
 	e.t.Helper()
-	name := "wt/" + filepath.Base(dir)
-	e.mu.Lock()
-	e.sessions = append(e.sessions, mockTmuxSession{
-		name:   name,
-		dir:    dir,
-		active: false,
-	})
-	e.mu.Unlock()
-	e.syncSessions()
+	ocDir := filepath.Join(wtDir, ".opencode")
+	os.MkdirAll(ocDir, 0755)
+	sessionFile := filepath.Join(ocDir, "session")
+	os.WriteFile(sessionFile, []byte("mock"), 0644)
+	// Set mtime to 5 hours ago (past the 4-hour stale threshold)
+	old := time.Now().Add(-5 * time.Hour)
+	os.Chtimes(sessionFile, old, old)
+	os.Chtimes(ocDir, old, old)
 }
-
 
 func (e *testEnv) addWorktree(name string) string {
 	e.t.Helper()
@@ -283,9 +160,7 @@ func (e *testEnv) wt(args ...string) string {
 	cmd.Dir = e.repo
 	cmd.Env = append(os.Environ(),
 		"HOME="+e.rootDir,
-		"WT_REMOTE_HOST=",
-		"WT_TEST_SESSIONS="+e.sessionsFile(),
-		"PATH="+e.stubDir+":"+os.Getenv("PATH"),
+		"PATH="+e.stubDir+":"+filepath.Dir(wtBinary)+":"+os.Getenv("PATH"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -300,9 +175,7 @@ func (e *testEnv) wtWithExit(args ...string) (string, int) {
 	cmd.Dir = e.repo
 	cmd.Env = append(os.Environ(),
 		"HOME="+e.rootDir,
-		"WT_REMOTE_HOST=",
-		"WT_TEST_SESSIONS="+e.sessionsFile(),
-		"PATH="+e.stubDir+":"+os.Getenv("PATH"),
+		"PATH="+e.stubDir+":"+filepath.Dir(wtBinary)+":"+os.Getenv("PATH"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -352,24 +225,6 @@ func (e *testEnv) addRootWorktree(root, name string) string {
 	wtDir := filepath.Join(e.repo, root, name)
 	gitCmd(e.t, e.repo, "worktree", "add", wtDir, "-b", name)
 	return wtDir
-}
-
-// wtCreate runs wt (create flow) with stub tmux on PATH.
-func (e *testEnv) wtCreate(args ...string) string {
-	e.t.Helper()
-	cmd := exec.Command(wtBinary, args...)
-	cmd.Dir = e.repo
-	cmd.Env = append(os.Environ(),
-		"HOME="+e.rootDir,
-		"WT_REMOTE_HOST=",
-		"WT_TEST_SESSIONS="+e.sessionsFile(),
-		"PATH="+e.stubDir+":"+os.Getenv("PATH"),
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		e.t.Fatalf("wt %v: %v\n%s", args, err, out)
-	}
-	return string(out)
 }
 
 func gitCmd(t *testing.T, dir string, args ...string) string {
@@ -552,11 +407,11 @@ func TestLs_UnifiedStatus(t *testing.T) {
 	env.mergeToMain("batch-merged")
 	gitCmd(t, env.repo, "checkout", "main")
 
-	// merged *: squash-merged with idle session
+	// merged *: squash-merged with session (.opencode/ dir)
 	wt5 := env.addWorktree("batch-squashed")
 	env.commitFile(wt5, "g.txt", "squashed", "squash feature")
 	env.push("batch-squashed")
-	env.createIdleSession(wt5)
+	env.simulateSession(wt5)
 	env.squashMergeToMain("batch-squashed")
 	gitCmd(t, env.repo, "checkout", "main")
 
@@ -596,7 +451,7 @@ func TestLs_MergedButDirty(t *testing.T) {
 	wt := env.addWorktree("merged-dirty")
 	env.commitFile(wt, "feature.txt", "done", "feature")
 	env.push("merged-dirty")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 	env.squashMergeToMain("merged-dirty")
 	gitCmd(t, env.repo, "checkout", "main")
 
@@ -624,7 +479,7 @@ func TestLs_RegressionPushDashU(t *testing.T) {
 	wt := env.addWorktree("push-u-branch")
 	env.commitFile(wt, "feature.txt", "done", "add feature")
 	gitCmd(t, env.repo, "push", "-u", "origin", "push-u-branch")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 
 	env.squashMergeToMain("push-u-branch")
 	gitCmd(t, env.repo, "push", "origin", "--delete", "push-u-branch")
@@ -648,7 +503,7 @@ func TestLs_RegressionPushDashUNoFF(t *testing.T) {
 	wt := env.addWorktree("push-u-noff")
 	env.commitFile(wt, "f.txt", "done", "feature")
 	gitCmd(t, env.repo, "push", "-u", "origin", "push-u-noff")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 
 	env.mergeToMain("push-u-noff")
 	gitCmd(t, env.repo, "push", "origin", "--delete", "push-u-noff")
@@ -691,7 +546,7 @@ func TestLs_RegressionPrunedTrackingRef(t *testing.T) {
 	wt := env.addWorktree("pruned-ref")
 	env.commitFile(wt, "h.txt", "pruned", "pruned feature")
 	env.push("pruned-ref")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 	env.squashMergeToMain("pruned-ref")
 	gitCmd(t, env.repo, "checkout", "main")
 
@@ -715,7 +570,7 @@ func TestLs_RegressionMergeTreeConflict(t *testing.T) {
 	wt := env.addWorktree("conflict-branch")
 	env.commitFile(wt, "shared.txt", "branch content", "branch change")
 	env.push("conflict-branch")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 	env.squashMergeToMain("conflict-branch")
 	gitCmd(t, env.repo, "checkout", "main")
 
@@ -745,7 +600,7 @@ func TestLs_RegressionMultiCommitSquash(t *testing.T) {
 	env.commitFile(wt, "b.txt", "second change", "commit 2")
 	env.commitFile(wt, "c.txt", "third change", "commit 3")
 	env.push("multi-commit")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 	env.squashMergeToMain("multi-commit")
 	gitCmd(t, env.repo, "checkout", "main")
 
@@ -773,7 +628,7 @@ func TestLs_RegressionRebaseMerge(t *testing.T) {
 	wt := env.addWorktree("rebase-merged")
 	env.commitFile(wt, "r.txt", "rebase content", "rebase work")
 	env.push("rebase-merged")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 
 	gitCmd(t, env.repo, "checkout", "main")
 	gitCmd(t, env.repo, "rebase", "rebase-merged")
@@ -802,7 +657,7 @@ func TestLs_RegressionRegularMergeWithSession(t *testing.T) {
 	wt := env.addWorktree("regular-merged")
 	env.commitFile(wt, "r.txt", "regular content", "regular work")
 	env.push("regular-merged")
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 
 	env.mergeToMain("regular-merged")
 	gitCmd(t, env.repo, "checkout", "main")
@@ -819,20 +674,49 @@ func TestLs_RegressionRegularMergeWithSession(t *testing.T) {
 	}
 }
 
-func TestLs_SessionActiveStatus(t *testing.T) {
+func TestLs_IdleStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
 	t.Parallel()
 	env := newTestEnv(t)
-	wt := env.addWorktree("batch-active")
-	env.createSession(wt) // has children = working
+
+	wt := env.addWorktree("session-idle")
+	env.simulateSession(wt)
 
 	out := env.wt("ls")
 	t.Log("output:\n" + out)
 
-	assertContains(t, out, "batch-active")
-	assertContains(t, out, "working")
+	assertContains(t, out, "session-idle")
+	// Check that the status column shows "idle" (not just the name)
+	lines := strings.Split(out, "\n")
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "session-idle") && strings.Contains(line, "idle") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("worktree with .opencode/ dir and no unique commits should be classified as idle")
+	}
+}
+
+func TestLs_StaleStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	wt := env.addWorktree("stale-wt")
+	env.simulateStaleSession(wt)
+
+	out := env.wt("ls")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "stale-wt")
+	assertContains(t, out, "stale *")
 }
 
 func TestBatchRm(t *testing.T) {
@@ -863,35 +747,24 @@ func TestBatchRm(t *testing.T) {
 	}
 }
 
-// --- Remote host configuration tests ---
-
-func wtRaw(t *testing.T, env []string, args ...string) (string, int) {
-	t.Helper()
-	cmd := exec.Command(wtBinary, args...)
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return string(out), exitErr.ExitCode()
-		}
-		t.Fatalf("unexpected error: %v", err)
-	}
-	return string(out), 0
-}
-
-func TestRemote_HostUnreachable(t *testing.T) {
+func TestBatchRm_StaleRemoved(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
 	t.Parallel()
+	env := newTestEnv(t)
 
-	base := []string{"WT_REMOTE_HOST=", "HOME=" + t.TempDir()}
+	wt := env.addWorktree("rm-stale")
+	env.simulateStaleSession(wt)
 
-	out, code := wtRaw(t, base, "wt-nonexistent-host-test:/tmp/fake")
-	if code == 0 {
-		t.Fatal("expected non-zero exit code")
+	out := env.wt("rm")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "rm-stale")
+	assertContains(t, out, "removed")
+	if env.worktreeExists("rm-stale") {
+		t.Error("stale worktree should have been removed")
 	}
-	assertContains(t, out, "cannot resolve remote HOME")
 }
 
 // --- Diff tests ---
@@ -1023,7 +896,7 @@ func TestLs_NonDefaultBranch(t *testing.T) {
 	gitCmd(t, env.repo, "push", "origin", "krocodile")
 	gitCmd(t, env.repo, "fetch", "origin")
 
-	env.createIdleSession(wt)
+	env.simulateSession(wt)
 
 	out := env.wt("ls")
 	t.Log("output:\n" + out)
@@ -1214,7 +1087,7 @@ func TestRm_ExtraArgs(t *testing.T) {
 	assertContains(t, out, "unexpected argument")
 }
 
-// --- Create / attach tests ---
+// --- Create / resume tests ---
 
 func TestHelp(t *testing.T) {
 	t.Parallel()
@@ -1226,7 +1099,7 @@ func TestHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wt --help failed: %v\n%s", err, out)
 	}
-	assertContains(t, string(out), "worktree session manager")
+	assertContains(t, string(out), "worktree manager")
 }
 
 func TestCreate_NewWorktree(t *testing.T) {
@@ -1236,7 +1109,7 @@ func TestCreate_NewWorktree(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 
-	out := env.wtCreate(".")
+	out := env.wt(".")
 	t.Log("output:\n" + out)
 
 	repoBase := filepath.Base(env.repo)
@@ -1260,38 +1133,44 @@ func TestCreate_NewWorktree(t *testing.T) {
 	}
 }
 
-func TestCreate_AttachExisting(t *testing.T) {
+func TestCreate_RunsOpenCode(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
 	t.Parallel()
 	env := newTestEnv(t)
 
-	env.addWorktree("test-attach")
-	env.createSession(filepath.Join(filepath.Dir(env.repo), "test-attach"))
-
-	out := env.wtCreate("test-attach")
+	out := env.wt(".")
 	t.Log("output:\n" + out)
 
-	assertContains(t, out, "test-attach")
-}
-
-func TestCreate_WithCommand(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping e2e test")
-	}
-	t.Parallel()
-	env := newTestEnv(t)
-
-	out := env.wtCreate(".", "echo", "hello")
-	t.Log("output:\n" + out)
-
+	// The mock opencode creates .opencode/ directory
 	repoBase := filepath.Base(env.repo)
 	nameRe := regexp.MustCompile(regexp.QuoteMeta(repoBase) + `-[0-9a-f]{7}`)
 	match := nameRe.FindString(out)
 	if match == "" {
-		t.Fatalf("output does not contain a worktree name matching %s-<7hex>:\n%s", repoBase, out)
+		t.Fatalf("output does not contain a worktree name:\n%s", out)
 	}
+
+	wtDir := filepath.Join(filepath.Dir(env.repo), match)
+	ocDir := filepath.Join(wtDir, ".opencode")
+	if _, err := os.Stat(ocDir); os.IsNotExist(err) {
+		t.Error("mock opencode should have created .opencode/ directory")
+	}
+}
+
+func TestResume_ExistingWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test")
+	}
+	t.Parallel()
+	env := newTestEnv(t)
+
+	env.addWorktree("test-resume")
+
+	out := env.wt("test-resume")
+	t.Log("output:\n" + out)
+
+	assertContains(t, out, "test-resume")
 }
 
 func TestBareWt_ShowsHelp(t *testing.T) {
@@ -1304,10 +1183,10 @@ func TestBareWt_ShowsHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bare wt failed: %v\n%s", err, out)
 	}
-	assertContains(t, string(out), "worktree session manager")
+	assertContains(t, string(out), "worktree manager")
 }
 
-func TestCreate_UnknownNameTriesRemote(t *testing.T) {
+func TestDispatch_UnknownName(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test")
 	}
@@ -1318,9 +1197,9 @@ func TestCreate_UnknownNameTriesRemote(t *testing.T) {
 	t.Log("output:\n" + out)
 
 	if code == 0 {
-		t.Error("expected non-zero exit for unreachable host")
+		t.Error("expected non-zero exit for unknown worktree name")
 	}
-	assertContains(t, out, "cannot resolve remote HOME")
+	assertContains(t, out, "not found")
 }
 
 // Suppress unused import warnings

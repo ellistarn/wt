@@ -4,15 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ellistarn/wt/pkg/display"
 	"github.com/ellistarn/wt/pkg/git"
-	"github.com/ellistarn/wt/pkg/ssh"
-	"github.com/ellistarn/wt/pkg/tmux"
-	"github.com/ellistarn/wt/pkg/transport"
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
@@ -59,41 +58,22 @@ func main() {
 	}
 }
 
-// isPath returns true if the argument looks like a path (., ./, /, ~/, or host:).
+// isPath returns true if the argument looks like a path.
 func isPath(arg string) bool {
-	if arg == "." || strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "~/") {
-		return true
-	}
-	if strings.Contains(arg, ":") {
-		return true
-	}
-	return false
-}
-
-// parseTarget splits a path argument into host and path components.
-// "host:path" → (host, path), "." → ("", resolved cwd repo), "/abs" → ("", "/abs")
-func parseTarget(arg string) (host, path string) {
-	if idx := strings.Index(arg, ":"); idx > 0 {
-		return arg[:idx], arg[idx+1:]
-	}
-	return "", arg
+	return arg == "." || strings.HasPrefix(arg, "./") ||
+		strings.HasPrefix(arg, "/") || strings.HasPrefix(arg, "~/") ||
+		strings.Contains(arg, "/")
 }
 
 func cmdDispatch(args []string, root string) {
 	first := args[0]
 
-	// If it's a path, create a new worktree there
 	if isPath(first) {
-		host, path := parseTarget(first)
 		cmd := ""
 		if len(args) > 1 {
 			cmd = strings.Join(args[1:], " ")
 		}
-		if host != "" {
-			cmdCreateRemote(host, path, root, cmd)
-		} else {
-			cmdCreateLocal(path, root, cmd)
-		}
+		cmdCreate(first, root, cmd)
 		return
 	}
 
@@ -103,106 +83,103 @@ func cmdDispatch(args []string, root string) {
 		return
 	}
 
-	// Not a path and not a known worktree — treat as a remote host defaulting to ~
-	cmd := ""
-	if len(args) > 1 {
-		cmd = strings.Join(args[1:], " ")
-	}
-	cmdCreateRemote(first, "~", root, cmd)
+	die("worktree %q not found", first)
 }
 
-func cmdCreateLocal(path, root, cmd string) {
-	t := transport.NewLocal()
-
-	repo, err := git.RepoRoot("", path)
+func cmdCreate(path, root, cmd string) {
+	repo, err := git.RepoRoot(path)
 	if err != nil {
 		die("not in a git repo: %s", path)
 	}
-	cmdCreate(t, repo, root, cmd)
-}
 
-func cmdCreateRemote(host, path, root, cmd string) {
-	t := transport.NewSSH(host)
-
-	remoteHome, err := ssh.ResolveRemoteHome(host)
-	if err != nil {
-		die("%v", err)
-	}
-	remotePath, err := ssh.ResolvePath(path, remoteHome)
-	if err != nil {
-		die("%v", err)
-	}
-
-	repo, err := git.RepoRoot(host, remotePath)
-	if err != nil {
-		die("not a git repo on remote: %s", remotePath)
-	}
-
-	cmdCreate(t, repo, root, cmd)
-}
-
-func cmdCreate(t transport.Transport, repo, root, cmd string) {
 	name := worktree.GenerateName(filepath.Base(repo))
 	if root == "" {
 		root = worktree.DefaultRoot
 	}
 	wtDir := worktree.WorktreeDir(repo, root, name)
 
-	if err := git.Pull(t.Host(), repo); err != nil {
+	if err := git.Pull(repo); err != nil {
 		die("failed to pull: %v", err)
 	}
-	if err := git.WorktreeAdd(t.Host(), repo, name, wtDir); err != nil {
+	if err := git.WorktreeAdd(repo, name, wtDir); err != nil {
 		die("failed to create worktree: %v", err)
 	}
 
-	sess := tmux.SessionName(name)
-	if err := tmux.NewSession(t, sess, wtDir); err != nil {
-		die("failed to create tmux session: %v", err)
+	// Resolve command: explicit arg > $WT_CMD > "opencode"
+	if cmd == "" {
+		cmd = os.Getenv("WT_CMD")
+	}
+	if cmd == "" {
+		cmd = "opencode"
 	}
 
-	if cmd != "" {
-		tmux.SendKeys(t, sess, cmd)
-	}
+	// Save metadata
+	worktree.WriteMetadata(repo, name, worktree.Metadata{Cmd: cmd})
 
-	if err := t.TmuxAttach(sess); err != nil {
-		die("%v", err)
-	}
+	runAgent(wtDir, cmd, repo, name)
 
-	if err := git.Pull(t.Host(), repo); err != nil {
+	if err := git.Pull(repo); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
 	}
-	printExitRow(t, worktree.Entry{
+	printExitRow(worktree.Entry{
 		Name:      name,
+		Branch:    name,
 		Dir:       wtDir,
 		Repo:      repo,
-		Host:      t.Host(),
 		CreatedAt: time.Now(),
 	})
 }
 
 func cmdResume(entry worktree.Entry) {
-	rt := transportFor(entry)
-
-	host := entry.Host
-	if err := git.Pull(host, entry.Repo); err != nil {
+	if err := git.Pull(entry.Repo); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
 	}
 
-	sess := tmux.SessionName(entry.Name)
-	if !tmux.HasSession(rt, sess) {
-		if err := tmux.NewSession(rt, sess, entry.Dir); err != nil {
-			die("failed to create tmux session: %v", err)
+	// Read saved command, fall back to $WT_CMD, then "opencode"
+	meta := worktree.ReadMetadata(entry.Repo, entry.Name)
+	cmd := meta.Cmd
+	if cmd == "" {
+		cmd = os.Getenv("WT_CMD")
+	}
+	if cmd == "" {
+		cmd = "opencode"
+	}
+
+	runAgent(entry.Dir, cmd, entry.Repo, entry.Name)
+
+	if err := git.Pull(entry.Repo); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
+	}
+	printExitRow(entry)
+}
+
+func runAgent(dir, cmd string, repo, name string) {
+	parts := strings.Fields(cmd)
+	c := exec.Command(parts[0], parts[1:]...)
+	c.Dir = dir
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	if err := c.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to start %s: %v\n", parts[0], err)
+		return
+	}
+
+	go func() {
+		for sig := range sigCh {
+			if c.Process != nil {
+				c.Process.Signal(sig)
+			}
 		}
-	}
+	}()
 
-	if err := rt.TmuxAttach(sess); err != nil {
-		die("%v", err)
-	}
-
-	if err := git.Pull(host, entry.Repo); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
-	}
-	printExitRow(rt, entry)
+	c.Wait()
+	signal.Stop(sigCh)
+	close(sigCh)
 }
 
 func cmdLs() {
@@ -226,7 +203,6 @@ func cmdLs() {
 	display.PrintTable(rows)
 }
 
-
 func cmdDiff(args []string) {
 	if len(args) == 0 {
 		die("usage: wt diff <name>")
@@ -236,13 +212,12 @@ func cmdDiff(args []string) {
 	if !ok {
 		die("worktree %q not found", name)
 	}
-	host := entry.Host
 
-	if err := git.Pull(host, entry.Repo); err != nil {
+	if err := git.Pull(entry.Repo); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: pull failed: %v\n", err)
 	}
 
-	stat, err := git.DiffStat(host, entry.Dir, entry.Repo)
+	stat, err := git.DiffStat(entry.Dir, entry.Repo)
 	if err != nil {
 		die("diff: %v", err)
 	}
@@ -253,7 +228,7 @@ func cmdDiff(args []string) {
 	fmt.Println(stat)
 
 	isTTY := isTerminal()
-	full, err := git.Diff(host, entry.Dir, entry.Repo, isTTY)
+	full, err := git.Diff(entry.Dir, entry.Repo, isTTY)
 	if err != nil {
 		die("diff: %v", err)
 	}
@@ -284,36 +259,33 @@ func page(content string) {
 
 func printUsage() {
 	usage := strings.TrimSpace(`
-wt — worktree session manager
+wt — worktree manager
 
 Usage:
-  wt .                      Create a new worktree in cwd repo, open shell
-  wt . <cmd>                Create a new worktree in cwd repo, run cmd
-  wt <path> [cmd]           Create a new worktree in repo at path
-  wt <host>:<path> [cmd]    Create a new worktree on remote host
-  wt <name>                 Attach to an existing worktree
-  wt ls                     List all worktrees (local and remote)
+  wt .                      Create a new worktree in cwd repo
+  wt <path>                 Create a new worktree in repo at path
+  wt <path> <cmd>           Create worktree, run cmd (default: $WT_CMD or opencode)
+  wt <name>                 Resume an existing worktree
+  wt ls                     List all worktrees
   wt diff <name>            Show changes on a worktree's branch
   wt rm                     Remove worktrees marked * in wt ls
   wt rm <name>              Remove a specific worktree
 
+Environment:
+  WT_CMD                    Default agent command (default: opencode)
+
 Status:
-  attached    tmux client connected
-  working     Process actively producing output
+  active      Agent session running
   dirty       Uncommitted changes in working tree
   merged *    Changes incorporated into upstream
   committed   Unique commits not yet in upstream
-  idle        Session exists, no unique commits
-  stale *     Session inactive >4 hours, no unique commits
-  empty *     No tmux session for this worktree
-
-Environment:
-  WT_REMOTE_HOST            SSH hostname for wt ls remote discovery
+  idle        Has session history, no unique commits
+  stale *     Inactive >4 hours, no unique commits
+  empty *     No session for this worktree
 
 Flags:
   --root <dir>              Directory for new worktrees, relative to repo root
                               (default: .. — sibling to the repo)
-                              Example: --root .worktrees
   -h, --help                Show this help
 `)
 	fmt.Println(usage)
@@ -324,18 +296,10 @@ func die(format string, args ...any) {
 	os.Exit(1)
 }
 
-func printExitRow(t transport.Transport, entry worktree.Entry) {
-	entries := []worktree.Entry{entry}
-	enrichEntries(entries, t)
+func printExitRow(entry worktree.Entry) {
+	enrichAll([]worktree.Entry{entry})
 	display.PrintTable([]display.Row{{
-		Entry:  entries[0],
-		Status: classifyStatus(entries[0]),
+		Entry:  entry,
+		Status: classifyStatus(entry),
 	}})
-}
-
-func transportFor(e worktree.Entry) transport.Transport {
-	if e.Host == "" {
-		return transport.NewLocal()
-	}
-	return transport.NewSSH(e.Host)
 }

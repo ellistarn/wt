@@ -3,45 +3,19 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ellistarn/wt/pkg/discover"
 	"github.com/ellistarn/wt/pkg/git"
-	"github.com/ellistarn/wt/pkg/tmux"
-	"github.com/ellistarn/wt/pkg/transport"
+	"github.com/ellistarn/wt/pkg/provider"
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-type remoteResult struct {
-	entries []worktree.Entry
-	err     error
-}
-
-// findWorktree discovers all worktrees (local and remote) and returns the one matching name.
+// findWorktree discovers all local worktrees and returns the one matching name.
 func findWorktree(name string) (worktree.Entry, bool) {
-	host := os.Getenv("WT_REMOTE_HOST")
-
-	localCh := make(chan []worktree.Entry, 1)
-	remoteCh := make(chan remoteResult, 1)
-
-	go func() { localCh <- discover.ListLocal() }()
-	if host != "" {
-		go func() {
-			entries, err := discover.ListRemote(host)
-			remoteCh <- remoteResult{entries, err}
-		}()
-	} else {
-		remoteCh <- remoteResult{}
-	}
-
-	local := <-localCh
-	rr := <-remoteCh
-	if rr.err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
-	}
-
-	all := append(local, rr.entries...)
+	all := discover.ListLocal()
 	for _, e := range all {
 		if e.Name == name {
 			return e, true
@@ -56,121 +30,126 @@ func findWorktree(name string) (worktree.Entry, bool) {
 	return worktree.Entry{}, false
 }
 
-// discoverAll discovers worktrees, enriches them with tmux session data,
-// and starts pulls for each unique repo. Returns entries and pull handles.
+// discoverAll discovers worktrees, enriches them with session data,
+// and starts pulls for each unique repo.
 func discoverAll(pull bool) ([]worktree.Entry, pullResult) {
-	host := os.Getenv("WT_REMOTE_HOST")
+	all := discover.ListLocal()
+	enrichAll(all)
 
-	localCh := make(chan []worktree.Entry, 1)
-	remoteCh := make(chan remoteResult, 1)
-
-	go func() { localCh <- discover.ListLocal() }()
-
-	if host != "" {
-		go func() {
-			entries, err := discover.ListRemote(host)
-			remoteCh <- remoteResult{entries, err}
-		}()
-	} else {
-		remoteCh <- remoteResult{}
-	}
-
-	local := <-localCh
-	rr := <-remoteCh
-	if rr.err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", rr.err)
-	}
-
-	all := append(local, rr.entries...)
-
-	// Enrich with tmux session data
-	localEntries := all[:len(local)]
-	remoteEntries := all[len(local):]
-
-	localT := transport.NewLocal()
-	enrichEntries(localEntries, localT)
-
-	if host != "" && rr.err == nil {
-		remoteT := transport.NewSSH(host)
-		enrichEntries(remoteEntries, remoteT)
-	}
-
-	// Start pulls
 	var pulled pullResult
 	if pull {
 		pulled = startPullRepos(all)
 	} else {
 		pulled = make(pullResult)
 	}
-
 	return all, pulled
 }
 
-// enrichEntries enriches worktree entries with tmux session data (attached, working, title, activity).
-func enrichEntries(entries []worktree.Entry, t transport.Transport) {
-	sessions := tmux.ListSessions(t)
-	sessionSet := make(map[string]bool, len(sessions))
-	for _, s := range sessions {
-		sessionSet[s] = true
+// enrichAll enriches worktree entries with agent session detection and metadata.
+func enrichAll(entries []worktree.Entry) {
+	if len(entries) == 0 {
+		return
 	}
-
-	attached := tmux.AttachedSessions(t)
+	procs := findAgentProcesses()
 
 	for i := range entries {
-		sess := tmux.SessionName(entries[i].Name)
-		if !sessionSet[sess] {
-			continue
+		dir := entries[i].Dir
+
+		// Query provider for title and activity
+		meta := worktree.ReadMetadata(entries[i].Repo, entries[i].Name)
+		cmd := meta.Cmd
+		if cmd == "" {
+			cmd = os.Getenv("WT_CMD")
+		}
+		if cmd == "" {
+			cmd = "opencode"
 		}
 
-		entries[i].Attached = attached[sess]
-		entries[i].Title = tmux.PaneTitle(t, sess)
+		info := provider.Query(dir, cmd)
 
-		activity := tmux.WindowActivity(t, sess)
-		if !activity.IsZero() {
-			entries[i].UpdatedAt = activity
+		if info.Title != "" {
+			entries[i].Title = info.Title
+		} else if meta.Title != "" {
+			entries[i].Title = meta.Title
+		}
+		if !info.Activity.IsZero() {
+			entries[i].UpdatedAt = info.Activity
 		}
 
-		if !activity.IsZero() && time.Since(activity) < tmux.ActivityThreshold {
-			entries[i].Status = "working"
-		} else {
-			entries[i].Status = "idle"
-		}
-
-		if entries[i].Status == "idle" && !entries[i].UpdatedAt.IsZero() &&
-			time.Since(entries[i].UpdatedAt) > worktree.StaleThreshold {
-			entries[i].Status = "stale"
+		// Check if agent process is running
+		if procs[dir] {
+			entries[i].Status = "active"
 		}
 	}
 }
 
+// agentNames is the list of known agent process names to detect.
+var agentNames = []string{"opencode", "claude"}
+
+// findAgentProcesses returns a map of working directories where an agent is running.
+func findAgentProcesses() map[string]bool {
+	result := make(map[string]bool)
+
+	out, err := exec.Command("ps", "-eo", "pid,comm").Output()
+	if err != nil {
+		return result
+	}
+
+	var pids []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			base := filepath.Base(fields[1])
+			for _, name := range agentNames {
+				if base == name {
+					pids = append(pids, fields[0])
+					break
+				}
+			}
+		}
+	}
+
+	for _, pid := range pids {
+		out, err := exec.Command("lsof", "-a", "-p", pid, "-d", "cwd", "-Fn").Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "n") {
+				dir := strings.TrimPrefix(line, "n")
+				result[dir] = true
+			}
+		}
+	}
+
+	return result
+}
+
 // pullResult holds per-repo done channels from a non-blocking pull.
-type pullResult map[repoKey]<-chan struct{}
+type pullResult map[string]<-chan struct{}
 
 func (f pullResult) Wait(e worktree.Entry) {
-	if ch, ok := f[repoKey{e.Host, e.Repo}]; ok {
+	if ch, ok := f[e.Repo]; ok {
 		<-ch
 	}
 }
 
-type repoKey struct{ host, repo string }
-
 func startPullRepos(entries []worktree.Entry) pullResult {
-	seen := make(map[repoKey]bool)
+	seen := make(map[string]bool)
 	result := make(pullResult)
 	for _, e := range entries {
-		k := repoKey{e.Host, e.Repo}
-		if seen[k] {
+		if seen[e.Repo] {
 			continue
 		}
-		seen[k] = true
+		seen[e.Repo] = true
 		ch := make(chan struct{})
-		result[k] = ch
-		go func(k repoKey, ch chan struct{}) {
-			if err := git.Pull(k.host, k.repo); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: pull failed for %s: %v\n", k.repo, err)
+		result[e.Repo] = ch
+		go func(repo string, ch chan struct{}) {
+			if err := git.Pull(repo); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: pull failed for %s: %v\n", repo, err)
 			}
 			close(ch)
-		}(k, ch)
+		}(e.Repo, ch)
 	}
 	return result
 }

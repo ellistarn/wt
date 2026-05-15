@@ -3,7 +3,10 @@ package worktree
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"os"
 	"path"
+	"path/filepath"
 	"time"
 )
 
@@ -26,25 +29,22 @@ type Entry struct {
 	Name      string
 	Dir       string
 	Repo      string
-	Host      string
 	Branch    string
 	CreatedAt time.Time
-	UpdatedAt time.Time
-	Status    string // working, idle, stale, or empty string (no session)
-	Title     string
-	Attached  bool
+	UpdatedAt time.Time // most recent activity timestamp from provider
+	Status    string    // "active" or "" (no active session)
+	Title     string    // from agent state store via provider
 }
 
-// HasSession reports whether this worktree has an active tmux session.
+// HasSession reports whether this worktree has an active or historical session.
+// True if there's a running opencode process (Status set) or .opencode/ dir exists (UpdatedAt set).
 func (e Entry) HasSession() bool {
-	return e.Status != "" || e.Attached
+	return e.Status != "" || !e.UpdatedAt.IsZero()
 }
 
 // GenerateName returns a project-scoped name for a new worktree.
 // Format: <project>-<hex> where project is the caller-supplied name
 // and hex is 7 random hex chars (28 bits of entropy, ~268M namespace).
-// The hyphen keeps the name flat — the same string is used as the git
-// branch name, the worktree directory name, and the display label.
 func GenerateName(project string) string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -53,7 +53,36 @@ func GenerateName(project string) string {
 	return project + "-" + hex.EncodeToString(b[:])[:7]
 }
 
-// TimeUnix converts a unix timestamp to time.Time.
-func TimeUnix(sec int64) time.Time {
-	return time.Unix(sec, 0)
+// Metadata holds per-worktree configuration stored in git's worktree metadata directory.
+type Metadata struct {
+	Cmd   string `json:"cmd,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+// MetadataPath returns the path to wt.json for a worktree.
+// Git stores worktree metadata at <repo>/.git/worktrees/<name>/
+func MetadataPath(repo, name string) string {
+	return filepath.Join(repo, ".git", "worktrees", name, "wt.json")
+}
+
+// ReadMetadata reads the metadata for a worktree. Returns zero value on any error.
+func ReadMetadata(repo, name string) Metadata {
+	path := MetadataPath(repo, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Metadata{}
+	}
+	var m Metadata
+	json.Unmarshal(data, &m)
+	return m
+}
+
+// WriteMetadata writes metadata for a worktree.
+func WriteMetadata(repo, name string, m Metadata) error {
+	path := MetadataPath(repo, name)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }

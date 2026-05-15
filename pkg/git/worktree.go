@@ -5,75 +5,59 @@ import (
 	"os"
 )
 
-// WorktreeAdd creates a new worktree at wtDir on branch <name>. No tracking
-// ref is set — UpstreamRef derives the comparison target from the repo root
-// at query time.
-func WorktreeAdd(host, repo, name, wtDir string) error {
+// WorktreeAdd creates a new worktree at wtDir on branch <name>.
+func WorktreeAdd(repo, name, wtDir string) error {
 	args := []string{"worktree", "add", wtDir, "-b", name}
-	out, err := runCapture(host, repo, args...)
+	out, err := runCapture(repo, args...)
 	if err != nil {
 		return err
 	}
-	logCmd(host, repo, out, args...)
-
+	logCmd(repo, out, args...)
 	return nil
 }
 
 // Pull fetches with prune and fast-forwards the current branch.
-// Uses --ff-only to fail explicitly if the local branch has diverged.
-func Pull(host, repo string) error {
+func Pull(repo string) error {
 	args := []string{"pull", "--ff-only", "--prune"}
-	out, err := runCapture(host, repo, args...)
+	out, err := runCapture(repo, args...)
 	if err != nil {
 		return err
 	}
-	logCmd(host, repo, out, args...)
+	logCmd(repo, out, args...)
 	return nil
 }
 
 // WorktreeRemove removes the worktree directory and deletes the branch.
-// wtDir is the worktree's actual path on disk (may be sibling or child layout).
-// branch may be empty for detached worktrees (skips branch deletion).
-// The caller's classification logic has already confirmed safety.
-func WorktreeRemove(host, repo, branch, wtDir string) error {
-	removeWorktreeAndBranch(host, repo, branch, wtDir, false)
+func WorktreeRemove(repo, branch, wtDir string) error {
+	removeWorktreeAndBranch(repo, branch, wtDir, false)
 	return nil
 }
 
 // WorktreeForceRemove removes the worktree and branch without safety checks.
-// wtDir is the worktree's actual path on disk (may be sibling or child layout).
-// branch may be empty for detached worktrees (skips branch deletion).
-func WorktreeForceRemove(host, repo, branch, wtDir string) error {
-	removeWorktreeAndBranch(host, repo, branch, wtDir, true)
+func WorktreeForceRemove(repo, branch, wtDir string) error {
+	removeWorktreeAndBranch(repo, branch, wtDir, true)
 	return nil
 }
 
-// removeWorktreeAndBranch deregisters the worktree and deletes its branch.
-// The two operations are independent — a missing worktree directory must not
-// prevent the branch from being cleaned up.
-func removeWorktreeAndBranch(host, repo, branch, wtDir string, force bool) {
-	// Step 1: try to deregister the worktree directory.
+func removeWorktreeAndBranch(repo, branch, wtDir string, force bool) {
 	args := []string{"worktree", "remove", wtDir}
 	if force {
 		args = []string{"worktree", "remove", "--force", wtDir}
 	}
-	out, err := runCapture(host, repo, args...)
+	out, err := runCapture(repo, args...)
 	if err != nil {
-		// Directory already gone or other issue — prune stale registrations
-		// so git no longer thinks the branch is checked out.
 		fmt.Fprintf(os.Stderr, "warning: git worktree remove failed for %s: %v\n", wtDir, err)
 		pruneArgs := []string{"worktree", "prune"}
-		pruneOut, _ := runCapture(host, repo, pruneArgs...)
-		logCmd(host, repo, pruneOut, pruneArgs...)
+		pruneOut, _ := runCapture(repo, pruneArgs...)
+		logCmd(repo, pruneOut, pruneArgs...)
 	} else {
-		logCmd(host, repo, out, args...)
+		logCmd(repo, out, args...)
 	}
 
-	// Step 2: delete the branch if one exists (detached worktrees have no branch).
 	if branch != "" {
 		branchArgs := []string{"branch", "-D", branch}
-		out, err = runGit(host, repo, branchArgs...)
-		logCmd(host, repo, out, branchArgs...)
+		out, err = runGit(repo, branchArgs...)
+		logCmd(repo, out, branchArgs...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: branch delete failed for %s: %v\n", branch, err)
 		}

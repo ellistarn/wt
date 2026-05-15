@@ -12,8 +12,7 @@ import (
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
-// Row is a single row in the worktree table. Callers provide the Entry and a
-// pre-formatted Status string (e.g. "working", "merged", "removed").
+// Row is a single row in the worktree table.
 type Row struct {
 	Entry  worktree.Entry
 	Status string
@@ -32,7 +31,7 @@ func SortRows(rows []Row) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		ri, rj := removableStatuses[rows[i].Status], removableStatuses[rows[j].Status]
 		if ri != rj {
-			return rj // removable entries sink to bottom
+			return rj
 		}
 		ai, aj := rows[i].Entry.UpdatedAt, rows[j].Entry.UpdatedAt
 		if !ai.IsZero() && !aj.IsZero() {
@@ -52,7 +51,7 @@ func SortRows(rows []Row) {
 	})
 }
 
-// PrintTable prints rows as an aligned table. Removable statuses get a * suffix.
+// PrintTable prints rows as an aligned table.
 func PrintTable(rows []Row) {
 	if len(rows) == 0 {
 		return
@@ -61,7 +60,7 @@ func PrintTable(rows []Row) {
 		fmt.Println()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tURI\tACTIVITY\tAGE\n")
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tDIR\tACTIVITY\tAGE\n")
 
 	now := time.Now()
 	for _, r := range rows {
@@ -71,19 +70,19 @@ func PrintTable(rows []Row) {
 			status += " *"
 		}
 		activity := formatActivity(e.UpdatedAt, now)
+		dir := formatDir(e.Dir)
+		age := formatDuration(e.CreatedAt, now)
 		title := e.Title
 		if title == "" {
 			title = "-"
 		}
-		uri := formatURI(e.Host, e.Dir)
-		age := formatDuration(e.CreatedAt, now)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, uri, activity, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, dir, activity, age)
 	}
 
 	w.Flush()
 }
 
-// formatActivity returns how long ago the session was active, or "now" if streaming.
+// formatActivity returns how long ago the session was active.
 func formatActivity(updatedAt time.Time, now time.Time) string {
 	if updatedAt.IsZero() {
 		return "-"
@@ -109,35 +108,15 @@ func formatDuration(t time.Time, now time.Time) string {
 	}
 }
 
-
-// formatRepo shortens the repo path by replacing $HOME with ~ and eliding
-// middle segments when the path is long. Short paths are left as-is.
-func formatRepo(repo string) string {
-	// Replace home prefix with ~
+// formatDir shortens the directory path by replacing $HOME with ~.
+func formatDir(dir string) string {
 	if home, err := os.UserHomeDir(); err == nil {
-		if repo == home {
+		if dir == home {
 			return "~"
 		}
-		if strings.HasPrefix(repo, home+"/") {
-			repo = "~/" + strings.TrimPrefix(repo, home+"/")
+		if strings.HasPrefix(dir, home+"/") {
+			return "~/" + strings.TrimPrefix(dir, home+"/")
 		}
 	}
-	parts := strings.Split(repo, "/")
-	// Only elide if there are enough segments to actually shorten.
-	// ~/a/b/c (4 parts) → no elision needed
-	// ~/a/b/c/d/e (6 parts) → ~/…/c/d/e
-	if len(parts) > 5 {
-		tail := strings.Join(parts[len(parts)-3:], "/")
-		return "~/.../" + tail
-	}
-	return repo
-}
-
-// formatURI combines host and worktree dir into a single host:path string.
-func formatURI(host, dir string) string {
-	if host == "" {
-		host = "localhost"
-	}
-	path := formatRepo(dir)
-	return fmt.Sprintf("%s:%s", host, path)
+	return dir
 }
