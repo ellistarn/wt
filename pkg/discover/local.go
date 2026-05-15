@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -143,9 +144,13 @@ func walkDir(dir string, depth int, fn func(repo string)) []string {
 		if !e.IsDir() {
 			continue
 		}
-		if !strings.HasPrefix(name, ".") {
-			children = append(children, name)
+		if strings.HasPrefix(name, ".") {
+			continue
 		}
+		if skipDir(name, depth) {
+			continue
+		}
+		children = append(children, name)
 	}
 
 	if hasGit {
@@ -161,13 +166,58 @@ func walkDir(dir string, depth int, fn func(repo string)) []string {
 	return children
 }
 
+// skipDir returns true for directories that are obviously not code repositories.
+// These are system directories, caches, and build artifacts that can contain
+// tens of thousands of subdirectories but never user-created git repos.
+func skipDir(name string, depth int) bool {
+	// macOS system directory — 28K+ subdirs, never contains user code
+	if depth == 1 && runtime.GOOS == "darwin" && name == "Library" {
+		return true
+	}
+	// Package/artifact caches (brazil-pkg-cache, pip-cache, __pycache__, etc.)
+	if isCacheDir(name) {
+		return true
+	}
+	// Go module cache: versioned dirs like "api@v0.28.0"
+	if strings.Contains(name, "@") {
+		return true
+	}
+	// JS/Node build artifacts
+	if name == "node_modules" {
+		return true
+	}
+	return false
+}
+
+// isCacheDir returns true for directories that ARE caches, not directories
+// that happen to have "cache" in their name. Matches dirs that end with
+// "-cache" or "_cache", or are exactly "cache", "caches", or "__pycache__".
+func isCacheDir(name string) bool {
+	lower := strings.ToLower(name)
+	if lower == "cache" || lower == "caches" || lower == "__pycache__" {
+		return true
+	}
+	if strings.HasSuffix(lower, "-cache") || strings.HasSuffix(lower, "_cache") {
+		return true
+	}
+	return false
+}
+
 // listInRepo lists worktrees within a single local repo.
 // Skips worktree checkouts (.git is a file) to avoid duplicate discovery —
 // git worktree list returns the same results from any worktree of a repo.
 func listInRepo(repo string) []worktree.Entry {
-	info, err := os.Lstat(filepath.Join(repo, ".git"))
+	gitDir := filepath.Join(repo, ".git")
+	info, err := os.Lstat(gitDir)
 	if err != nil || !info.IsDir() {
 		return nil // .git file = worktree checkout, skip
+	}
+	// Fast path: if .git/worktrees/ doesn't exist or is empty, there are
+	// no extra worktrees. Avoids spawning git for repos without worktrees.
+	wtDir := filepath.Join(gitDir, "worktrees")
+	entries, err := os.ReadDir(wtDir)
+	if err != nil || len(entries) == 0 {
+		return nil
 	}
 	b, err := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").Output()
 	if err != nil {
