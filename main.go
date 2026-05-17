@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -143,6 +145,13 @@ func cmdResume(entry worktree.Entry) {
 	}
 	if cmd == "" {
 		cmd = "opencode"
+	}
+
+	// For opencode, find the existing session and resume it.
+	if isOpenCodeCmd(cmd) {
+		if id := findOpenCodeSessionID(entry.Dir); id != "" {
+			cmd += " --session " + id
+		}
 	}
 
 	runAgent(entry.Dir, cmd, entry.Repo, entry.Name)
@@ -302,4 +311,43 @@ func printExitRow(entry worktree.Entry) {
 		Entry:  entry,
 		Status: classifyStatus(entry),
 	}})
+}
+
+// isOpenCodeCmd reports whether cmd invokes the opencode agent.
+func isOpenCodeCmd(cmd string) bool {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return false
+	}
+	return filepath.Base(parts[0]) == "opencode"
+}
+
+// findOpenCodeSessionID uses the opencode CLI to find the most recent session
+// for the given directory. Returns "" if no session is found or the CLI fails.
+func findOpenCodeSessionID(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	var sessions []struct {
+		ID        string `json:"id"`
+		Directory string `json:"directory"`
+	}
+	if err := json.Unmarshal(out, &sessions); err != nil {
+		return ""
+	}
+
+	cleanDir := filepath.Clean(dir)
+	for _, s := range sessions {
+		if filepath.Clean(s.Directory) == cleanDir {
+			return s.ID
+		}
+	}
+	return ""
 }

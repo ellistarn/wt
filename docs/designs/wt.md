@@ -26,9 +26,9 @@ HEAD.
 
 An **agent session** is implicit. The agent stores its state in a directory
 inside the worktree (e.g. `.opencode/` for OpenCode, `.claude/` for Claude Code).
-Launching the agent in a worktree directory naturally resumes the previous
-conversation. There is no explicit session binding — the filesystem *is* the
-binding.
+On resume, `wt` queries the agent for the most recent session bound to the
+worktree directory and passes it explicitly (e.g., `opencode --session <id>`).
+On create, the agent starts fresh in the new worktree directory.
 
 ## CLI
 
@@ -50,8 +50,10 @@ agent command to run (see [Agent Command](#agent-command)).
 Resume an existing worktree. `name` matches worktree names by exact match or
 suffix (e.g., `a3f8c12` matches `api-a3f8c12`).
 
-Pulls best-effort, launches the agent in the worktree directory, pulls again on
-exit.
+Pulls best-effort, queries the agent's session store for the most recent session
+in the worktree directory, launches the agent with the session identifier (e.g.,
+`opencode --session <id>`), pulls again on exit. If no previous session is found,
+the agent starts fresh.
 
 ### Dispatch
 
@@ -95,6 +97,25 @@ Title and activity are obtained by querying the agent's state store through a
 If `cmd` does not match a known provider, all providers are tried in order and
 the first non-empty result wins. If no provider returns data, the title column
 shows `"-"` and activity is empty.
+
+### Session Resume
+
+On resume, `wt` identifies the previous session to continue:
+
+- **OpenCode** — runs `opencode session list --format json` in the worktree
+  directory, filters for the first entry whose `directory` field matches the
+  worktree path, and passes `--session <id>` to the agent command. This ensures
+  the correct session is resumed even when multiple worktrees share a project.
+- **Claude** — no explicit binding needed; Claude Code auto-resumes by
+  directory.
+
+If no session is found, the agent starts a fresh session (correct for
+first-time use or after session deletion).
+
+The CLI is used here rather than direct sqlite3 queries (as in Title/Activity
+Detection) because it correctly handles project initialization on first access.
+Direct DB queries are used for `wt ls` because that path must be read-only and
+parallel across many worktrees.
 
 ### Process Detection
 
