@@ -11,44 +11,59 @@ import (
 	"time"
 )
 
-// FetchOpenCodeSessions calls `opencode session list` once and returns all
-// sessions indexed by canonical directory. This is the primary data source
-// for title and activity — it avoids DB path discovery and SQL path-matching
-// issues entirely.
+// FetchOpenCodeSessions queries the OpenCode SQLite database directly for all
+// sessions across all projects. This avoids the `opencode session list` CLI
+// which is project-scoped and only returns sessions for the current project.
 func FetchOpenCodeSessions() SessionMap {
+	dbPath := openCodeDBPath()
+	if dbPath == "" {
+		return nil
+	}
+
+	// Get the most recent non-subagent session per directory (across all projects).
+	// Use ASCII Record Separator (0x1E) as column delimiter to avoid conflicts
+	// with tabs or other characters in session titles.
+	query := `SELECT id, title, time_updated, directory FROM session
+		WHERE id IN (
+			SELECT id FROM session s1
+			WHERE s1.time_updated = (
+				SELECT MAX(s2.time_updated) FROM session s2
+				WHERE s2.directory = s1.directory AND (s2.parent_id IS NULL OR s2.parent_id = '')
+			)
+		) AND (parent_id IS NULL OR parent_id = '');`
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json").Output()
+	out, err := exec.CommandContext(ctx, "sqlite3", "-separator", "\x1e", dbPath, query).Output()
 	if err != nil {
 		return nil
 	}
 
-	var sessions []struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Updated   int64  `json:"updated"`
-		Directory string `json:"directory"`
-	}
-	if err := json.Unmarshal(out, &sessions); err != nil {
-		return nil
-	}
+	result := make(SessionMap)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x1e", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		id := parts[0]
+		title := parts[1]
+		updatedMs, _ := strconv.ParseInt(parts[2], 10, 64)
+		dir := parts[3]
 
-	// Index by canonical directory. Sessions are returned most-recent-first,
-	// so the first match per directory wins.
-	result := make(SessionMap, len(sessions))
-	for _, s := range sessions {
-		canonical := resolveDir(s.Directory)
+		canonical := resolveDir(dir)
 		if _, exists := result[canonical]; exists {
-			continue // keep the most recent (first in list)
+			continue
 		}
 		var activity time.Time
-		if s.Updated > 0 {
-			activity = time.UnixMilli(s.Updated)
+		if updatedMs > 0 {
+			activity = time.UnixMilli(updatedMs)
 		}
 		result[canonical] = SessionInfo{
-			ID:       s.ID,
-			Title:    s.Title,
+			ID:       id,
+			Title:    title,
 			Activity: activity,
 		}
 	}
@@ -56,16 +71,22 @@ func FetchOpenCodeSessions() SessionMap {
 }
 
 // EnrichTokens adds token data from the OpenCode SQLite database to an
-// existing SessionInfo. This is optional enrichment — if the DB is
-// unavailable or sqlite3 is not installed, the SessionInfo is unchanged.
+// existing SessionInfo. Uses the session ID directly when available to avoid
+// path-matching issues. If the DB is unavailable or sqlite3 is not installed,
+// the SessionInfo is unchanged.
 func EnrichTokens(dir string, info *SessionInfo) {
 	dbPath := openCodeDBPath()
 	if dbPath == "" {
 		return
 	}
 
-	canonical := resolveDir(dir)
-	tokens, subTokens := queryTokens(dbPath, canonical)
+	var tokens, subTokens int64
+	if info.ID != "" {
+		tokens, subTokens = queryTokensByID(dbPath, info.ID)
+	} else {
+		canonical := resolveDir(dir)
+		tokens, subTokens = queryTokensByDir(dbPath, canonical)
+	}
 	if tokens > 0 {
 		info.Tokens = tokens
 	}
@@ -74,51 +95,76 @@ func EnrichTokens(dir string, info *SessionInfo) {
 	}
 }
 
-// queryTokens queries the DB for token counts only.
-func queryTokens(dbPath, dir string) (tokens, subTokens int64) {
-	query := `
-WITH RECURSIVE session_tree(id, depth) AS (
-    SELECT id, 0 FROM session
-    WHERE id = (SELECT id FROM session WHERE directory = '` + escapeSQLite(dir) + `' ORDER BY time_updated DESC LIMIT 1)
-    UNION ALL
-    SELECT s.id, st.depth + 1 FROM session s JOIN session_tree st ON s.parent_id = st.id
-)
-SELECT
-    COALESCE((SELECT MAX(json_extract(m.data, '$.tokens.total'))
-        FROM message m WHERE m.session_id = (SELECT id FROM session_tree WHERE depth = 0)
-        AND json_extract(m.data, '$.tokens.total') IS NOT NULL), 0),
-    COALESCE((SELECT SUM(session_max) FROM (
-        SELECT MAX(json_extract(m.data, '$.tokens.total')) AS session_max
-        FROM message m
-        WHERE m.session_id IN (SELECT id FROM session_tree WHERE depth > 0)
-        AND json_extract(m.data, '$.tokens.total') IS NOT NULL
-        GROUP BY m.session_id
-    )), 0);`
+// queryTokensByID queries the DB for token counts using the session ID directly.
+// Compatible with SQLite 3.7+ (no json_extract or CTEs required).
+// Batches the parent and all child sessions into a single sqlite3 invocation.
+func queryTokensByID(dbPath, sessionID string) (tokens, subTokens int64) {
+	// Fetch session_id and data for the parent session AND all direct children
+	// in one query. Use ASCII Record Separator as column delimiter and strip
+	// newlines from data to ensure one record per line.
+	query := `SELECT session_id, replace(data, char(10), '') FROM message
+		WHERE (session_id = '` + escapeSQLite(sessionID) + `'
+			OR session_id IN (SELECT id FROM session WHERE parent_id = '` + escapeSQLite(sessionID) + `'))
+		AND data LIKE '%"tokens"%';`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "sqlite3", "-separator", "\t", dbPath, query).Output()
+	out, err := exec.CommandContext(ctx, "sqlite3", "-separator", "\x1e", dbPath, query).Output()
 	if err != nil {
 		return 0, 0
 	}
 
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return 0, 0
+	// Track max tokens per session_id
+	maxBySession := make(map[string]int64)
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\x1e", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		sid := parts[0]
+		var msg struct {
+			Tokens struct {
+				Total int64 `json:"total"`
+			} `json:"tokens"`
+		}
+		if err := json.Unmarshal([]byte(parts[1]), &msg); err != nil {
+			continue
+		}
+		if msg.Tokens.Total > maxBySession[sid] {
+			maxBySession[sid] = msg.Tokens.Total
+		}
 	}
 
-	parts := strings.SplitN(line, "\t", 2)
-	if len(parts) < 2 {
-		return 0, 0
-	}
-
-	if v, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
-		tokens = v
-	}
-	if v, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-		subTokens = v
+	// Partition: parent session vs child sessions
+	tokens = maxBySession[sessionID]
+	for sid, max := range maxBySession {
+		if sid != sessionID {
+			subTokens += max
+		}
 	}
 	return tokens, subTokens
+}
+
+// queryTokensByDir queries the DB for token counts using directory path matching.
+func queryTokensByDir(dbPath, dir string) (tokens, subTokens int64) {
+	// Find the most recent session ID for this directory
+	idQuery := `SELECT id FROM session WHERE directory = '` + escapeSQLite(dir) + `'
+		AND (parent_id IS NULL OR parent_id = '') ORDER BY time_updated DESC LIMIT 1;`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sqlite3", dbPath, idQuery).Output()
+	if err != nil {
+		return 0, 0
+	}
+	sessionID := strings.TrimSpace(string(out))
+	if sessionID == "" {
+		return 0, 0
+	}
+	return queryTokensByID(dbPath, sessionID)
 }
 
 // QueryOpenCodeDir checks for a .opencode/ directory in the worktree and uses

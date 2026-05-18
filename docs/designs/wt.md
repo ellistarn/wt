@@ -85,20 +85,17 @@ Title, activity, and token counts are obtained by querying the agent's state
 store through a **provider** model. The provider is selected based on the `cmd`
 field in `wt.json`:
 
-- **OpenCode provider** — CLI-first architecture. One call to
-  `opencode session list --format json` fetches all sessions with their `title`,
-  `updated` timestamp (Unix milliseconds), and `directory`. This batch result is
-  indexed by canonical (symlink-resolved) directory and matched against worktree
-  paths. Token counts are enriched separately via direct `sqlite3` queries
-  against the OpenCode database (`$XDG_DATA_HOME/opencode/opencode.db`,
-  `~/.local/share/opencode/opencode.db`, or
-  `~/Library/Application Support/opencode/opencode.db` on macOS). Token queries
-  use MAX of `$.tokens.total` per session (the value is cumulative); base and
-  subagent sessions are reported separately via a recursive CTE traversing
-  `parent_id`. If the CLI is unavailable, falls back to scanning `.opencode/`
-  directory entry mtimes in the worktree (no title or token data in fallback
-  mode). If `sqlite3` or the database is unavailable, title and activity still
-  display correctly — only the token column degrades to `"-"`.
+- **OpenCode provider** — queries the OpenCode SQLite database directly
+  (`$XDG_DATA_HOME/opencode/opencode.db`, `~/.local/share/opencode/opencode.db`,
+  or `~/Library/Application Support/opencode/opencode.db` on macOS). A single
+  query fetches the most recent non-subagent session per directory across all
+  projects, returning `id`, `title`, `time_updated`, and `directory`. Token
+  counts are extracted by fetching message rows for the session and parsing
+  `$.tokens.total` from the JSON in Go. Base and subagent sessions (direct
+  children via `parent_id`) are reported separately. All queries use basic SQL
+  compatible with SQLite 3.7+ (no CTEs or `json_extract`). If `sqlite3` or the
+  database is unavailable, falls back to scanning `.opencode/` directory entry
+  mtimes in the worktree (no title or token data in fallback mode).
 - **Claude provider** — walks the `.claude/` directory tree in the worktree and
   uses the most recent file mtime as the activity timestamp. No title or token
   data is available.
@@ -117,23 +114,20 @@ directory.
 
 On resume, `wt` identifies the previous session to continue:
 
-- **OpenCode** — runs `opencode session list --format json` in the worktree
-  directory, filters for the first entry whose `directory` field matches the
-  worktree path (both sides symlink-resolved), and passes `--session <id>` to
-  the agent command. This ensures the correct session is resumed even when
-  multiple worktrees share a project.
+- **OpenCode** — queries the SQLite database for the most recent session whose
+  `directory` matches the worktree path (both sides symlink-resolved), and passes
+  `--session <id>` to the agent command. This ensures the correct session is
+  resumed even when multiple worktrees share a project.
 - **Claude** — no explicit binding needed; Claude Code auto-resumes by
   directory.
 
 If no session is found, the agent starts a fresh session (correct for
 first-time use or after session deletion).
 
-The CLI is the primary data source for both `wt ls` and resume. One
-`opencode session list` call returns all sessions — this is both faster (one
-process spawn vs N `sqlite3` invocations) and more reliable (the CLI handles
-its own path normalization, avoiding symlink mismatches in SQL queries). Direct
-`sqlite3` queries are used only for token enrichment because the CLI does not
-expose token counts.
+Direct SQLite queries are the primary data source for both `wt ls` and resume.
+The `opencode session list` CLI is not used because it is project-scoped and
+only returns sessions for the project the running server is serving — worktrees
+from other projects would show no session data.
 
 ### Process Detection
 
