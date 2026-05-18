@@ -75,6 +75,9 @@ func enrichAll(entries []worktree.Entry) {
 		if !info.Activity.IsZero() {
 			entries[i].UpdatedAt = info.Activity
 		}
+		if info.Tokens > 0 {
+			entries[i].Tokens = info.Tokens
+		}
 
 		// Check if agent process is running
 		if procs[dir] {

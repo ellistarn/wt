@@ -5,14 +5,14 @@ its own branch. `wt` manages the lifecycle: create, list, resume, diff, clean up
 
 ```
 $ wt ls
-WORKTREE   STATUS      TITLE                              DIR                                              ACTIVITY  AGE
-a3f8c12    active      Rewrite Linux scheduler in Rust    ~/go/src/github.com/torvalds/linux-a3f8c12       now       3h
-b7e2a09    committed   Quantum-safe cryptography          ~/go/src/github.com/satoshi/bitcoin-b7e2a09      1d        1d
-e4f2a81    dirty       Finish The Winds of Winter         ~/go/src/github.com/grrm/asoiaf-e4f2a81          5m        15y
-e1d4b83    empty *     Autonomous drone delivery          ~/go/src/github.com/bezos/prime-air-e1d4b83      -         12y
-c9a1f57    merged *    Add exceptions to Go               ~/go/src/github.com/robpike/go-c9a1f57           2h        2h
-d5b8e24    stale *     Actually open OpenAI               ~/go/src/github.com/altman/openai-d5b8e24        4y        10y
-7f3b1c8    empty *     Half-Life 3                        ~/go/src/github.com/gaben/hl3-7f3b1c8            -         18y
+WORKTREE   STATUS      TITLE                              DIR                                              TOKENS  ACTIVITY  AGE
+a3f8c12    active      Rewrite Linux scheduler in Rust    ~/go/src/github.com/torvalds/linux-a3f8c12       1.2M    now       3h
+b7e2a09    committed   Quantum-safe cryptography          ~/go/src/github.com/satoshi/bitcoin-b7e2a09      450K    1d        1d
+e4f2a81    dirty       Finish The Winds of Winter         ~/go/src/github.com/grrm/asoiaf-e4f2a81          3.8M    5m        15y
+e1d4b83    empty *     Autonomous drone delivery          ~/go/src/github.com/bezos/prime-air-e1d4b83      -       -         12y
+c9a1f57    merged *    Add exceptions to Go               ~/go/src/github.com/robpike/go-c9a1f57           890K    2h        2h
+d5b8e24    stale *     Actually open OpenAI               ~/go/src/github.com/altman/openai-d5b8e24        72.1M   4y        10y
+7f3b1c8    empty *     Half-Life 3                        ~/go/src/github.com/gaben/hl3-7f3b1c8            -       -         18y
 ```
 
 ## Status

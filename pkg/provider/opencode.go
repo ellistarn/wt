@@ -26,11 +26,25 @@ func queryOpenCodeDB(dir string) SessionInfo {
 		return SessionInfo{}
 	}
 
-	// Query for the most recent session in this directory.
-	// time_updated is a Unix timestamp (seconds).
-	query := `SELECT title, time_updated FROM session WHERE directory = '` + escapeSQLite(dir) + `' ORDER BY time_updated DESC LIMIT 1;`
+	// Single query: get title, activity, and total tokens (including subagents)
+	// for the most recent session in this directory. The recursive CTE traverses
+	// parent_id to include subagent sessions in the token sum.
+	query := `
+WITH RECURSIVE session_tree(id) AS (
+    SELECT id FROM session
+    WHERE id = (SELECT id FROM session WHERE directory = '` + escapeSQLite(dir) + `' ORDER BY time_updated DESC LIMIT 1)
+    UNION ALL
+    SELECT s.id FROM session s JOIN session_tree st ON s.parent_id = st.id
+)
+SELECT
+    (SELECT title FROM session WHERE id = (SELECT id FROM session_tree LIMIT 1)),
+    (SELECT time_updated FROM session WHERE id = (SELECT id FROM session_tree LIMIT 1)),
+    COALESCE(SUM(json_extract(m.data, '$.tokens.total')), 0)
+FROM message m
+WHERE m.session_id IN (SELECT id FROM session_tree)
+AND json_extract(m.data, '$.tokens.total') IS NOT NULL;`
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "sqlite3", "-separator", "\t", dbPath, query).Output()
 	if err != nil {
@@ -42,21 +56,31 @@ func queryOpenCodeDB(dir string) SessionInfo {
 		return SessionInfo{}
 	}
 
-	parts := strings.SplitN(line, "\t", 2)
-	if len(parts) < 2 {
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) < 3 {
 		return SessionInfo{}
 	}
 
 	title := parts[0]
 
-	ts, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return SessionInfo{Title: title}
+	var activity time.Time
+	if ts, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+		activity = time.UnixMilli(ts)
+	}
+
+	var tokens int64
+	if v, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+		tokens = v
+	}
+
+	if title == "" && activity.IsZero() && tokens == 0 {
+		return SessionInfo{}
 	}
 
 	return SessionInfo{
 		Title:    title,
-		Activity: time.UnixMilli(ts),
+		Activity: activity,
+		Tokens:   tokens,
 	}
 }
 
