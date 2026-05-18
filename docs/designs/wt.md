@@ -85,16 +85,20 @@ Title, activity, and token counts are obtained by querying the agent's state
 store through a **provider** model. The provider is selected based on the `cmd`
 field in `wt.json`:
 
-- **OpenCode provider** — queries `~/.local/share/opencode/opencode.db` (or
-  `~/Library/Application Support/opencode/opencode.db` on macOS) via the
-  `sqlite3` CLI for the session's `title` and `time_updated` (stored as Unix
-  milliseconds). Token counts use the MAX of `$.tokens.total` per session
-  (the value is cumulative within a session). The base session and subagent
-  sessions are reported separately: the display shows `base (+sub)` where sub
-  is the SUM of MAX values across all child sessions (recursive CTE traversing
-  `parent_id`). Falls back to scanning `.opencode/` directory
-  entry mtimes in the worktree if the database is unavailable (no token data in
-  fallback mode).
+- **OpenCode provider** — CLI-first architecture. One call to
+  `opencode session list --format json` fetches all sessions with their `title`,
+  `updated` timestamp (Unix milliseconds), and `directory`. This batch result is
+  indexed by canonical (symlink-resolved) directory and matched against worktree
+  paths. Token counts are enriched separately via direct `sqlite3` queries
+  against the OpenCode database (`$XDG_DATA_HOME/opencode/opencode.db`,
+  `~/.local/share/opencode/opencode.db`, or
+  `~/Library/Application Support/opencode/opencode.db` on macOS). Token queries
+  use MAX of `$.tokens.total` per session (the value is cumulative); base and
+  subagent sessions are reported separately via a recursive CTE traversing
+  `parent_id`. If the CLI is unavailable, falls back to scanning `.opencode/`
+  directory entry mtimes in the worktree (no title or token data in fallback
+  mode). If `sqlite3` or the database is unavailable, title and activity still
+  display correctly — only the token column degrades to `"-"`.
 - **Claude provider** — walks the `.claude/` directory tree in the worktree and
   uses the most recent file mtime as the activity timestamp. No title or token
   data is available.
@@ -103,24 +107,33 @@ If `cmd` does not match a known provider, all providers are tried in order and
 the first non-empty result wins. If no provider returns data, the title and
 tokens columns show `"-"` and activity is empty.
 
+All directory comparisons resolve symlinks via `filepath.EvalSymlinks` to produce
+canonical paths. This handles systems with home directory symlinks (e.g.,
+`/home/user` → `/local/home/user` on NFS-backed dev desktops) where the CLI,
+database, and git may report different path representations for the same
+directory.
+
 ### Session Resume
 
 On resume, `wt` identifies the previous session to continue:
 
 - **OpenCode** — runs `opencode session list --format json` in the worktree
   directory, filters for the first entry whose `directory` field matches the
-  worktree path, and passes `--session <id>` to the agent command. This ensures
-  the correct session is resumed even when multiple worktrees share a project.
+  worktree path (both sides symlink-resolved), and passes `--session <id>` to
+  the agent command. This ensures the correct session is resumed even when
+  multiple worktrees share a project.
 - **Claude** — no explicit binding needed; Claude Code auto-resumes by
   directory.
 
 If no session is found, the agent starts a fresh session (correct for
 first-time use or after session deletion).
 
-The CLI is used here rather than direct sqlite3 queries (as in Title/Activity
-Detection) because it correctly handles project initialization on first access.
-Direct DB queries are used for `wt ls` because that path must be read-only and
-parallel across many worktrees.
+The CLI is the primary data source for both `wt ls` and resume. One
+`opencode session list` call returns all sessions — this is both faster (one
+process spawn vs N `sqlite3` invocations) and more reliable (the CLI handles
+its own path normalization, avoiding symlink mismatches in SQL queries). Direct
+`sqlite3` queries are used only for token enrichment because the CLI does not
+expose token counts.
 
 ### Process Detection
 

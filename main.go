@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/ellistarn/wt/pkg/display"
 	"github.com/ellistarn/wt/pkg/git"
+	"github.com/ellistarn/wt/pkg/provider"
 	"github.com/ellistarn/wt/pkg/worktree"
 )
 
@@ -322,32 +321,8 @@ func isOpenCodeCmd(cmd string) bool {
 	return filepath.Base(parts[0]) == "opencode"
 }
 
-// findOpenCodeSessionID uses the opencode CLI to find the most recent session
-// for the given directory. Returns "" if no session is found or the CLI fails.
+// findOpenCodeSessionID returns the most recent OpenCode session ID for the
+// given directory, or "" if no session is found.
 func findOpenCodeSessionID(dir string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-
-	var sessions []struct {
-		ID        string `json:"id"`
-		Directory string `json:"directory"`
-	}
-	if err := json.Unmarshal(out, &sessions); err != nil {
-		return ""
-	}
-
-	cleanDir := filepath.Clean(dir)
-	for _, s := range sessions {
-		if filepath.Clean(s.Directory) == cleanDir {
-			return s.ID
-		}
-	}
-	return ""
+	return provider.FetchOpenCodeSessions().MatchID(dir)
 }
