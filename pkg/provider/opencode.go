@@ -26,23 +26,29 @@ func queryOpenCodeDB(dir string) SessionInfo {
 		return SessionInfo{}
 	}
 
-	// Single query: get title, activity, and total tokens (including subagents)
-	// for the most recent session in this directory. The recursive CTE traverses
-	// parent_id to include subagent sessions in the token sum.
+	// Single query: get title, activity, and tokens split into base session vs
+	// subagents. The recursive CTE traverses parent_id to find subagent sessions.
+	// Tokens use MAX per session (the value is cumulative within a session).
 	query := `
-WITH RECURSIVE session_tree(id) AS (
-    SELECT id FROM session
+WITH RECURSIVE session_tree(id, depth) AS (
+    SELECT id, 0 FROM session
     WHERE id = (SELECT id FROM session WHERE directory = '` + escapeSQLite(dir) + `' ORDER BY time_updated DESC LIMIT 1)
     UNION ALL
-    SELECT s.id FROM session s JOIN session_tree st ON s.parent_id = st.id
+    SELECT s.id, st.depth + 1 FROM session s JOIN session_tree st ON s.parent_id = st.id
 )
 SELECT
     (SELECT title FROM session WHERE id = (SELECT id FROM session_tree LIMIT 1)),
     (SELECT time_updated FROM session WHERE id = (SELECT id FROM session_tree LIMIT 1)),
-    COALESCE(SUM(json_extract(m.data, '$.tokens.total')), 0)
-FROM message m
-WHERE m.session_id IN (SELECT id FROM session_tree)
-AND json_extract(m.data, '$.tokens.total') IS NOT NULL;`
+    COALESCE((SELECT MAX(json_extract(m.data, '$.tokens.total'))
+        FROM message m WHERE m.session_id = (SELECT id FROM session_tree WHERE depth = 0)
+        AND json_extract(m.data, '$.tokens.total') IS NOT NULL), 0),
+    COALESCE((SELECT SUM(session_max) FROM (
+        SELECT MAX(json_extract(m.data, '$.tokens.total')) AS session_max
+        FROM message m
+        WHERE m.session_id IN (SELECT id FROM session_tree WHERE depth > 0)
+        AND json_extract(m.data, '$.tokens.total') IS NOT NULL
+        GROUP BY m.session_id
+    )), 0);`
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -56,8 +62,8 @@ AND json_extract(m.data, '$.tokens.total') IS NOT NULL;`
 		return SessionInfo{}
 	}
 
-	parts := strings.SplitN(line, "\t", 3)
-	if len(parts) < 3 {
+	parts := strings.SplitN(line, "\t", 4)
+	if len(parts) < 4 {
 		return SessionInfo{}
 	}
 
@@ -73,14 +79,20 @@ AND json_extract(m.data, '$.tokens.total') IS NOT NULL;`
 		tokens = v
 	}
 
-	if title == "" && activity.IsZero() && tokens == 0 {
+	var subTokens int64
+	if v, err := strconv.ParseInt(parts[3], 10, 64); err == nil {
+		subTokens = v
+	}
+
+	if title == "" && activity.IsZero() && tokens == 0 && subTokens == 0 {
 		return SessionInfo{}
 	}
 
 	return SessionInfo{
-		Title:    title,
-		Activity: activity,
-		Tokens:   tokens,
+		Title:     title,
+		Activity:  activity,
+		Tokens:    tokens,
+		SubTokens: subTokens,
 	}
 }
 

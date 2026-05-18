@@ -8,9 +8,10 @@ import (
 
 // SessionInfo contains information about an agent session in a directory.
 type SessionInfo struct {
-	Title    string
-	Activity time.Time // last update time of the session
-	Tokens   int64     // total tokens consumed (including subagents)
+	Title     string
+	Activity  time.Time // last update time of the session
+	Tokens    int64     // tokens consumed in the base session
+	SubTokens int64     // tokens consumed across subagent sessions
 }
 
 // Query returns session info for a worktree directory.

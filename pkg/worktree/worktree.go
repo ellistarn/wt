@@ -34,7 +34,8 @@ type Entry struct {
 	UpdatedAt time.Time // most recent activity timestamp from provider
 	Status    string    // "active" or "" (no active session)
 	Title     string    // from agent state store via provider
-	Tokens    int64     // total tokens consumed in session (including subagents)
+	Tokens    int64     // tokens consumed in the base session
+	SubTokens int64     // tokens consumed across subagent sessions
 }
 
 // HasSession reports whether this worktree has an active or historical session.
