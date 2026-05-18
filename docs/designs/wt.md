@@ -88,9 +88,11 @@ field in `wt.json`:
 - **OpenCode provider** — queries `~/.local/share/opencode/opencode.db` (or
   `~/Library/Application Support/opencode/opencode.db` on macOS) via the
   `sqlite3` CLI for the session's `title` and `time_updated` (stored as Unix
-  milliseconds). Token counts are obtained by summing `$.tokens.total` from all
-  assistant messages in the session tree (recursive CTE traversing `parent_id`
-  to include subagent sessions). Falls back to scanning `.opencode/` directory
+  milliseconds). Token counts use the MAX of `$.tokens.total` per session
+  (the value is cumulative within a session). The base session and subagent
+  sessions are reported separately: the display shows `base (+sub)` where sub
+  is the SUM of MAX values across all child sessions (recursive CTE traversing
+  `parent_id`). Falls back to scanning `.opencode/` directory
   entry mtimes in the worktree if the database is unavailable (no token data in
   fallback mode).
 - **Claude provider** — walks the `.claude/` directory tree in the worktree and

@@ -76,7 +76,7 @@ func PrintTable(rows []Row) {
 		if title == "" {
 			title = "-"
 		}
-		tokens := formatTokens(e.Tokens)
+		tokens := formatTokens(e.Tokens, e.SubTokens)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, dir, tokens, activity, age)
 	}
 
@@ -91,11 +91,20 @@ func formatActivity(updatedAt time.Time, now time.Time) string {
 	return formatDuration(updatedAt, now)
 }
 
-// formatTokens returns a compact token count string (e.g. "1.2M", "450K", "8K").
-func formatTokens(tokens int64) string {
-	if tokens == 0 {
+// formatTokens returns a compact token count string (e.g. "35K (+35K)", "450K", "8K").
+func formatTokens(tokens, subTokens int64) string {
+	if tokens == 0 && subTokens == 0 {
 		return "-"
 	}
+	base := formatTokenCount(tokens)
+	if subTokens == 0 {
+		return base
+	}
+	return base + " (+" + formatTokenCount(subTokens) + ")"
+}
+
+// formatTokenCount formats a single token count compactly.
+func formatTokenCount(tokens int64) string {
 	switch {
 	case tokens >= 1_000_000:
 		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
