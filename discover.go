@@ -52,10 +52,12 @@ func enrichAll(entries []worktree.Entry) {
 	}
 	procs := findAgentProcesses()
 
+	// Batch-fetch all OpenCode sessions with one CLI call.
+	ocSessions := provider.FetchOpenCodeSessions()
+
 	for i := range entries {
 		dir := entries[i].Dir
 
-		// Query provider for title and activity
 		meta := worktree.ReadMetadata(entries[i].Repo, entries[i].Name)
 		cmd := meta.Cmd
 		if cmd == "" {
@@ -65,7 +67,22 @@ func enrichAll(entries []worktree.Entry) {
 			cmd = "opencode"
 		}
 
-		info := provider.Query(dir, cmd)
+		// Match session: CLI-first for opencode, mtime for claude.
+		var info provider.SessionInfo
+		if provider.BaseCmd(cmd) != "claude" {
+			info = ocSessions.Match(dir)
+			if info != (provider.SessionInfo{}) {
+				provider.EnrichTokens(dir, &info)
+			}
+		}
+		if info == (provider.SessionInfo{}) {
+			switch provider.BaseCmd(cmd) {
+			case "opencode":
+				info = provider.QueryOpenCodeDir(dir)
+			default:
+				info = provider.QueryClaude(dir)
+			}
+		}
 
 		if info.Title != "" {
 			entries[i].Title = info.Title

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,25 +11,71 @@ import (
 	"time"
 )
 
-func queryOpenCode(dir string) SessionInfo {
-	// Try SQLite database first (primary source of truth)
-	if info := queryOpenCodeDB(dir); info != (SessionInfo{}) {
-		return info
+// FetchOpenCodeSessions calls `opencode session list` once and returns all
+// sessions indexed by canonical directory. This is the primary data source
+// for title and activity — it avoids DB path discovery and SQL path-matching
+// issues entirely.
+func FetchOpenCodeSessions() SessionMap {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json").Output()
+	if err != nil {
+		return nil
 	}
 
-	// Fallback: check for .opencode/ directory in the worktree
-	return queryOpenCodeDir(dir)
+	var sessions []struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Updated   int64  `json:"updated"`
+		Directory string `json:"directory"`
+	}
+	if err := json.Unmarshal(out, &sessions); err != nil {
+		return nil
+	}
+
+	// Index by canonical directory. Sessions are returned most-recent-first,
+	// so the first match per directory wins.
+	result := make(SessionMap, len(sessions))
+	for _, s := range sessions {
+		canonical := resolveDir(s.Directory)
+		if _, exists := result[canonical]; exists {
+			continue // keep the most recent (first in list)
+		}
+		var activity time.Time
+		if s.Updated > 0 {
+			activity = time.UnixMilli(s.Updated)
+		}
+		result[canonical] = SessionInfo{
+			ID:       s.ID,
+			Title:    s.Title,
+			Activity: activity,
+		}
+	}
+	return result
 }
 
-func queryOpenCodeDB(dir string) SessionInfo {
+// EnrichTokens adds token data from the OpenCode SQLite database to an
+// existing SessionInfo. This is optional enrichment — if the DB is
+// unavailable or sqlite3 is not installed, the SessionInfo is unchanged.
+func EnrichTokens(dir string, info *SessionInfo) {
 	dbPath := openCodeDBPath()
 	if dbPath == "" {
-		return SessionInfo{}
+		return
 	}
 
-	// Single query: get title, activity, and tokens split into base session vs
-	// subagents. The recursive CTE traverses parent_id to find subagent sessions.
-	// Tokens use MAX per session (the value is cumulative within a session).
+	canonical := resolveDir(dir)
+	tokens, subTokens := queryTokens(dbPath, canonical)
+	if tokens > 0 {
+		info.Tokens = tokens
+	}
+	if subTokens > 0 {
+		info.SubTokens = subTokens
+	}
+}
+
+// queryTokens queries the DB for token counts only.
+func queryTokens(dbPath, dir string) (tokens, subTokens int64) {
 	query := `
 WITH RECURSIVE session_tree(id, depth) AS (
     SELECT id, 0 FROM session
@@ -37,8 +84,6 @@ WITH RECURSIVE session_tree(id, depth) AS (
     SELECT s.id, st.depth + 1 FROM session s JOIN session_tree st ON s.parent_id = st.id
 )
 SELECT
-    (SELECT title FROM session WHERE id = (SELECT id FROM session_tree LIMIT 1)),
-    (SELECT time_updated FROM session WHERE id = (SELECT id FROM session_tree LIMIT 1)),
     COALESCE((SELECT MAX(json_extract(m.data, '$.tokens.total'))
         FROM message m WHERE m.session_id = (SELECT id FROM session_tree WHERE depth = 0)
         AND json_extract(m.data, '$.tokens.total') IS NOT NULL), 0),
@@ -54,52 +99,32 @@ SELECT
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "sqlite3", "-separator", "\t", dbPath, query).Output()
 	if err != nil {
-		return SessionInfo{}
+		return 0, 0
 	}
 
 	line := strings.TrimSpace(string(out))
 	if line == "" {
-		return SessionInfo{}
+		return 0, 0
 	}
 
-	parts := strings.SplitN(line, "\t", 4)
-	if len(parts) < 4 {
-		return SessionInfo{}
+	parts := strings.SplitN(line, "\t", 2)
+	if len(parts) < 2 {
+		return 0, 0
 	}
 
-	title := parts[0]
-
-	var activity time.Time
-	if ts, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-		activity = time.UnixMilli(ts)
-	}
-
-	var tokens int64
-	if v, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+	if v, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
 		tokens = v
 	}
-
-	var subTokens int64
-	if v, err := strconv.ParseInt(parts[3], 10, 64); err == nil {
+	if v, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
 		subTokens = v
 	}
-
-	if title == "" && activity.IsZero() && tokens == 0 && subTokens == 0 {
-		return SessionInfo{}
-	}
-
-	return SessionInfo{
-		Title:     title,
-		Activity:  activity,
-		Tokens:    tokens,
-		SubTokens: subTokens,
-	}
+	return tokens, subTokens
 }
 
-// queryOpenCodeDir checks for a .opencode/ directory in the worktree and uses
-// the most recent file mtime as session activity. This serves as a fallback
-// when the SQLite database is unavailable.
-func queryOpenCodeDir(dir string) SessionInfo {
+// QueryOpenCodeDir checks for a .opencode/ directory in the worktree and uses
+// the most recent file mtime as session activity. This serves as a last-resort
+// fallback when both the CLI and database are unavailable.
+func QueryOpenCodeDir(dir string) SessionInfo {
 	ocDir := filepath.Join(dir, ".opencode")
 	if _, err := os.Stat(ocDir); err != nil {
 		return SessionInfo{}
@@ -135,7 +160,16 @@ func openCodeDBPath() string {
 		return ""
 	}
 
-	// Try ~/.local/share/opencode/opencode.db first (Linux / observed macOS location)
+	// Respect $XDG_DATA_HOME (defaults to ~/.local/share per XDG spec)
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome != "" {
+		path := filepath.Join(dataHome, "opencode", "opencode.db")
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	// Try ~/.local/share/opencode/opencode.db (Linux default)
 	path := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
 	if _, err := os.Stat(path); err == nil {
 		return path

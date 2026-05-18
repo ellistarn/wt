@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-func queryClaude(dir string) SessionInfo {
+// QueryClaude checks for a .claude/ directory in the worktree and uses
+// the most recent file mtime as activity indicator.
+func QueryClaude(dir string) SessionInfo {
 	// Check for .claude/ directory in the worktree itself.
 	// Use most recent file mtime as activity indicator.
 	claudeDir := filepath.Join(dir, ".claude")
