@@ -60,7 +60,7 @@ func PrintTable(rows []Row) {
 		fmt.Println()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tDIR\tACTIVITY\tAGE\n")
+	fmt.Fprintf(w, "WORKTREE\tSTATUS\tTITLE\tDIR\tTOKENS\tACTIVITY\tAGE\n")
 
 	now := time.Now()
 	for _, r := range rows {
@@ -76,7 +76,8 @@ func PrintTable(rows []Row) {
 		if title == "" {
 			title = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, dir, activity, age)
+		tokens := formatTokens(e.Tokens)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, status, title, dir, tokens, activity, age)
 	}
 
 	w.Flush()
@@ -88,6 +89,21 @@ func formatActivity(updatedAt time.Time, now time.Time) string {
 		return "-"
 	}
 	return formatDuration(updatedAt, now)
+}
+
+// formatTokens returns a compact token count string (e.g. "1.2M", "450K", "8K").
+func formatTokens(tokens int64) string {
+	if tokens == 0 {
+		return "-"
+	}
+	switch {
+	case tokens >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	case tokens >= 1_000:
+		return fmt.Sprintf("%dK", tokens/1_000)
+	default:
+		return fmt.Sprintf("%d", tokens)
+	}
 }
 
 // formatDuration returns a compact relative time string.

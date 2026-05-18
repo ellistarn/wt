@@ -10,6 +10,7 @@ import (
 type SessionInfo struct {
 	Title    string
 	Activity time.Time // last update time of the session
+	Tokens   int64     // total tokens consumed (including subagents)
 }
 
 // Query returns session info for a worktree directory.

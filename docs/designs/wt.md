@@ -79,24 +79,27 @@ order:
 On create, the resolved command is saved to `wt.json`. On resume, the saved
 command is read from `wt.json`, falling back to `$WT_CMD` then `"opencode"`.
 
-### Title / Activity Detection
+### Title / Activity / Token Detection
 
-Title and activity are obtained by querying the agent's state store through a
-**provider** model. The provider is selected based on the `cmd` field in
-`wt.json`:
+Title, activity, and token counts are obtained by querying the agent's state
+store through a **provider** model. The provider is selected based on the `cmd`
+field in `wt.json`:
 
 - **OpenCode provider** — queries `~/.local/share/opencode/opencode.db` (or
   `~/Library/Application Support/opencode/opencode.db` on macOS) via the
   `sqlite3` CLI for the session's `title` and `time_updated` (stored as Unix
-  milliseconds). Falls back to scanning `.opencode/` directory entry mtimes in
-  the worktree if the database is unavailable.
+  milliseconds). Token counts are obtained by summing `$.tokens.total` from all
+  assistant messages in the session tree (recursive CTE traversing `parent_id`
+  to include subagent sessions). Falls back to scanning `.opencode/` directory
+  entry mtimes in the worktree if the database is unavailable (no token data in
+  fallback mode).
 - **Claude provider** — walks the `.claude/` directory tree in the worktree and
-  uses the most recent file mtime as the activity timestamp. No title is
-  available.
+  uses the most recent file mtime as the activity timestamp. No title or token
+  data is available.
 
 If `cmd` does not match a known provider, all providers are tried in order and
-the first non-empty result wins. If no provider returns data, the title column
-shows `"-"` and activity is empty.
+the first non-empty result wins. If no provider returns data, the title and
+tokens columns show `"-"` and activity is empty.
 
 ### Session Resume
 
@@ -133,12 +136,14 @@ queries `git worktree list --porcelain` in each, enriches with session data,
 classifies, sorts by activity (removable entries pushed to bottom).
 
 ```
-WORKTREE     STATUS      TITLE                   DIR                                   ACTIVITY  AGE
-api-a3f8c12  active      Implement OAuth flow    ~/go/src/github.com/ellistarn/api     3m        3h
-api-b7e2a09  committed   Fix rate limiting bug   ~/go/src/github.com/ellistarn/api     1h        1d
-wt-c9a1f57   dirty       Refactor DB layer       ~/go/src/github.com/ellistarn/wt      5m        2h
-wt-d5b8e24   merged *    -                       ~/go/src/github.com/ellistarn/wt      2d        2d
-wt-e1d4b83   empty *     -                       ~/go/src/github.com/ellistarn/wt      -         2d
+WORKTREE   STATUS      TITLE                              DIR                                              TOKENS  ACTIVITY  AGE
+a3f8c12    active      Rewrite Linux scheduler in Rust    ~/go/src/github.com/torvalds/linux-a3f8c12       1.2M    now       3h
+b7e2a09    committed   Quantum-safe cryptography          ~/go/src/github.com/satoshi/bitcoin-b7e2a09      450K    1d        1d
+e4f2a81    dirty       Finish The Winds of Winter         ~/go/src/github.com/grrm/asoiaf-e4f2a81          3.8M    5m        15y
+e1d4b83    empty *     Autonomous drone delivery          ~/go/src/github.com/bezos/prime-air-e1d4b83      -       -         12y
+c9a1f57    merged *    Add exceptions to Go               ~/go/src/github.com/robpike/go-c9a1f57           890K    2h        2h
+d5b8e24    stale *     Actually open OpenAI               ~/go/src/github.com/altman/openai-d5b8e24        72.1M   4y        10y
+7f3b1c8    empty *     Half-Life 3                        ~/go/src/github.com/gaben/hl3-7f3b1c8            -       -         18y
 ```
 
 ### `wt diff <name>`
@@ -237,7 +242,6 @@ worktree has a session, it is classified as merged.
 ## Scoped Out
 
 - Auto-cleanup on branch merge (requires polling or webhook).
-- Token/cost tracking per worktree.
 - Multiple discovery roots (only `$HOME` is scanned).
 
 ## Rejected Alternatives
